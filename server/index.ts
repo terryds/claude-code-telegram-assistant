@@ -236,8 +236,10 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const r = await getBotInfo(token);
     if (!r.ok) return err(400, `Invalid token: ${r.error}`);
     setSetting('telegram_bot_token', token);
-    // Reset any prior chat link so capture starts fresh.
+    // Reset any prior chat link so capture starts fresh, and drop the old
+    // bot's getUpdates offset (meaningless — possibly harmful — for the new one).
     deleteSetting('telegram_chat_id');
+    deleteSetting('telegram_update_offset');
     return json({ ok: true, bot: r.bot });
   }
 

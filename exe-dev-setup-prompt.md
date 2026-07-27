@@ -21,7 +21,7 @@ It's a single-user, self-hosted relay that forwards Telegram messages to a codin
      pm2 save
      pm2 startup   # run the command it prints so it survives reboot
 5. Confirm it's listening on 8000 with no errors (`pm2 logs coding-agent-telegram-relay --lines 20`).
-6. Tell me the public URL for port 8000 on this VM — that's the dashboard. I'll finish setup there myself: choose Claude Code or Codex, sign in (subscription, right in the page — or paste an API key), then connect Telegram by scanning a QR code (Telegram creates the bot and links my chat automatically; pasting a BotFather token is the fallback).
+6. Tell me the public URL for port 8000 on this VM — that's the dashboard. I'll finish setup there myself: choose Claude Code or Codex, sign in (subscription, right in the page — or paste an API key), then connect Telegram with a bot token from @BotFather (or the QR-scan option, where Telegram creates the bot for me).
 
 Do NOT set the Telegram bot token or chat ID, and do NOT authenticate the agent CLIs — those all happen in the dashboard onboarding UI.
 ```
@@ -46,10 +46,10 @@ and complete onboarding — all in the browser, no terminal:
    - **Subscription** — click **Sign in with Claude** / **Sign in with Codex**,
      open the link, authorize (for Codex, enter the one-time code). Done.
    - **API key** — paste an Anthropic / OpenAI key instead.
-2. **Connect your Telegram bot.** Click **Generate QR code** and scan it with
-   your phone — Telegram creates a bot for you and links your chat in one step
-   (managed bots, no BotFather). Or switch to the fallback tab and paste a
-   token from [@BotFather](https://t.me/BotFather) instead.
+2. **Connect your Telegram bot.** Paste a token from
+   [@BotFather](https://t.me/BotFather) (default), or switch to the **Scan QR
+   code** tab — Telegram creates a bot for you and links your chat in one step
+   (managed bots; needs a Telegram app that supports it, which not all do yet).
 3. **(BotFather method only)** Message your bot once to link your chat.
 
 Then you're on the dashboard and the relay is live.

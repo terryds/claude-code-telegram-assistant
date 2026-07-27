@@ -44,7 +44,9 @@ export function Onboarding({ status, onChange }: Props) {
   const [captureError, setCaptureError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  const [method, setMethod] = useState<'qr' | 'manual'>('qr');
+  // BotFather is the default: the managed-bots QR flow isn't supported yet by
+  // every Telegram client (notably some Android builds).
+  const [method, setMethod] = useState<'qr' | 'manual'>('manual');
   const [qr, setQr] = useState<QrPairing | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrStarting, setQrStarting] = useState(false);
@@ -359,21 +361,6 @@ export function Onboarding({ status, onChange }: Props) {
         >
           <div className="grid grid-cols-2 gap-2 mb-4">
             <button
-              onClick={() => setMethod('qr')}
-              disabled={step < 2}
-              className={[
-                'px-3 py-2 rounded border text-sm font-medium transition-colors',
-                method === 'qr'
-                  ? 'border-blue-600 bg-blue-950/40 text-zinc-100'
-                  : 'border-zinc-800 bg-zinc-900/40 text-zinc-300 hover:bg-zinc-800',
-              ].join(' ')}
-            >
-              Scan QR code{' '}
-              <span className="text-[10px] uppercase tracking-wide text-blue-300 ml-1">
-                recommended
-              </span>
-            </button>
-            <button
               onClick={() => {
                 if (qrWaiting) cancelQr();
                 setMethod('manual');
@@ -386,7 +373,22 @@ export function Onboarding({ status, onChange }: Props) {
                   : 'border-zinc-800 bg-zinc-900/40 text-zinc-300 hover:bg-zinc-800',
               ].join(' ')}
             >
-              Paste a BotFather token
+              Paste a BotFather token{' '}
+              <span className="text-[10px] uppercase tracking-wide text-blue-300 ml-1">
+                recommended
+              </span>
+            </button>
+            <button
+              onClick={() => setMethod('qr')}
+              disabled={step < 2}
+              className={[
+                'px-3 py-2 rounded border text-sm font-medium transition-colors',
+                method === 'qr'
+                  ? 'border-blue-600 bg-blue-950/40 text-zinc-100'
+                  : 'border-zinc-800 bg-zinc-900/40 text-zinc-300 hover:bg-zinc-800',
+              ].join(' ')}
+            >
+              Scan QR code
             </button>
           </div>
 
@@ -439,7 +441,9 @@ export function Onboarding({ status, onChange }: Props) {
               <div className="text-sm space-y-3">
                 <p className="text-zinc-400">
                   Scan a QR code and Telegram creates a bot for you automatically
-                  — it also links this chat, so you're done in one step.
+                  — it also links this chat, so you're done in one step. Note:
+                  not all Telegram apps support this yet (some Android builds
+                  don't); if the scan does nothing, use the BotFather method.
                 </p>
                 <button
                   onClick={startQr}

@@ -22,9 +22,9 @@ A tiny relay that forwards Telegram messages to a coding agent — [Claude Code]
   - **Codex** — [install](https://developers.openai.com/codex/cli); `codex --version` must work
 - `python3` — only for Claude's in-dashboard subscription sign-in (it drives a
   PTY). `bin/install` installs it; skip if you authenticate Claude another way.
-- A Telegram bot — the default onboarding creates one for you via a **QR
-  scan** (Telegram managed bots, no BotFather needed). Alternatively, create
-  one manually with [@BotFather](https://t.me/BotFather) and paste the token
+- A Telegram bot — create one with [@BotFather](https://t.me/BotFather) and
+  paste the token (default), or let onboarding create one for you via a **QR
+  scan** (Telegram managed bots; not supported by every Telegram app yet)
 
 ## Local development
 
@@ -39,13 +39,15 @@ You'll be sent to `/onboarding`:
 
 1. **Choose your engine and authenticate it.** The page verifies the CLI is installed, then checks whether it's signed in. If not, pick **Subscription** (sign in straight from the dashboard — no terminal) or **API key** (paste a key; it's stored and injected when the relay runs). See [Authentication](#authentication).
 2. Connect your Telegram bot — two methods:
-   - **Scan QR code (default).** Click **Generate QR code**, scan it with your
-     phone, and confirm in Telegram. Telegram creates a bot for you (managed
-     bots, Bot API 9.6+), the token flows back automatically, and your chat is
+   - **Paste a BotFather token (default).** The classic flow: the server
+     validates it via `getMe` and shows `@your_bot`.
+   - **Scan QR code.** Click **Generate QR code**, scan it with your phone,
+     and confirm in Telegram. Telegram creates a bot for you (managed bots,
+     Bot API 9.6+), the token flows back automatically, and your chat is
      linked in the same step — done, skip step 3. Requires a reachable pairing
-     service (see `worker/README.md`; override with `TELEGRAM_ONBOARDING_URL`).
-   - **Paste a BotFather token.** The classic flow: the server validates it
-     via `getMe` and shows `@your_bot`.
+     service (see `worker/README.md`; override with `TELEGRAM_ONBOARDING_URL`)
+     and a Telegram app that supports managed-bot creation (not all do yet —
+     notably some Android builds).
 3. (BotFather method only) Click **Start listening**, then open Telegram and message your bot. The first incoming message captures your chat ID and links it. The bot replies "✅ Chat linked".
 
 After that you're on the dashboard, where you can switch engine, manage agent authentication, toggle the relay, link a group topic, reset the agent session, view recent messages, or reset everything.

@@ -190,6 +190,10 @@ async function applyPairing(
   const chatId = Number.isFinite(owner) && owner > 0 ? String(Math.trunc(owner)) : null;
 
   setSetting('telegram_bot_token', token.trim());
+  // The stored getUpdates offset belongs to the previous bot; keeping it can
+  // hide the new bot's backlog (e.g. the /start the user taps right after
+  // creating it, before this claim lands). Reset so that backlog is replayed.
+  deleteSetting('telegram_update_offset');
   if (chatId) {
     // A private chat's id equals the owner's user id, so linking needs no
     // "send a message first" capture step.

@@ -23,8 +23,8 @@ relay ── GET /v1/telegram/pairings/:id (Bearer poll_token) ──▶ {status
 ```
 
 The pairing slug is embedded in the bot username (`assistant_<slug>_bot`,
-80 bits of entropy), which is how the webhook correlates a bot creation back
-to a pairing. Pairings expire after 5 minutes; the token is served exactly
+40 bits of entropy — plenty, since testing a guess requires creating a real
+bot), which is how the webhook correlates a bot creation back to a pairing. Pairings expire after 5 minutes; the token is served exactly
 once (subsequent polls get `410 claimed`).
 
 ## Deploy
@@ -35,7 +35,9 @@ once (subsequent polls get `410 claimed`).
    **Bot Management Mode** for it in BotFather's bot settings so it can manage
    child bots and receive `managed_bot` updates.
 
-2. **Create the KV namespace** and drop its id into `wrangler.toml`:
+2. **Create the KV namespace** (used only for rate limiting — pairing state
+   lives in Durable Objects, which deploy automatically) and drop its id into
+   `wrangler.toml`:
 
    ```bash
    cd worker
@@ -79,8 +81,10 @@ curl -s $BASE/v1/telegram/pairings/<pairing_id> \
 
 ## Notes
 
-- The worker stores pairings (and, briefly, tokens) in KV with a 30-minute
-  TTL; nothing is persisted beyond that.
+- Pairing state (and, briefly, tokens) lives in one Durable Object per
+  pairing — strongly consistent, so the relay sees "ready" on its next poll
+  with no KV cache lag. An alarm wipes each object ~30 minutes after expiry;
+  nothing is persisted beyond that.
 - `POST /v1/telegram/pairings` is rate-limited to 10/minute per IP
   (best-effort, KV-based). Add Cloudflare WAF rules if you need more.
 - Failure to fetch a child token surfaces to the relay as

@@ -1,10 +1,15 @@
-// Telegram managed-bot pairing service (Cloudflare Worker + KV).
+// Telegram managed-bot pairing service (Cloudflare Worker + Durable Objects).
 //
 // Mediates QR onboarding between a relay instance and Telegram's Managed Bots
 // API (Bot API 9.6+): the relay mints a pairing here, the user scans a QR that
 // deep-links into Telegram's native "create bot" confirmation, Telegram then
 // notifies the manager bot (webhook below), and this worker fetches the child
 // bot's token so the relay can collect it on its next poll.
+//
+// Pairing state lives in a Durable Object (one per pairing) because it must be
+// strongly consistent: with KV, the relay's 2s polls hit a 60s edge cache and
+// the user stares at "waiting" long after the token arrived. KV is kept only
+// for best-effort rate limiting, where staleness is fine.
 //
 // Wire protocol (compatible with hermes-agent's onboarding client):
 //   POST /v1/telegram/pairings            {bot_name?} ->
@@ -15,9 +20,9 @@
 //     404 {error:"not_found"} | 410 {error:"expired"|"claimed"} | 401 {error:"unauthorized"}
 //   POST /webhook/:secret                 Telegram webhook for the manager bot
 //
-// Correlation happens through the generated username: the pairing slug is
-// embedded as assistant_<slug>_bot, so the managed_bot update alone identifies
-// the pairing (no state needed on Telegram's side).
+// Correlation happens through the generated username: the pairing id doubles
+// as the slug embedded in assistant_<slug>_bot, so the managed_bot update
+// alone identifies the pairing (no lookup table needed).
 
 type KVNamespace = {
   get(key: string): Promise<string | null>;
@@ -25,7 +30,23 @@ type KVNamespace = {
   delete(key: string): Promise<void>;
 };
 
+type DurableObjectId = { toString(): string };
+type DurableObjectStub = { fetch(req: Request): Promise<Response> };
+type DurableObjectNamespace = {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): DurableObjectStub;
+};
+type DurableObjectStorage = {
+  get<T>(key: string): Promise<T | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+  deleteAll(): Promise<void>;
+  setAlarm(scheduledTime: number): Promise<void>;
+};
+type DurableObjectState = { storage: DurableObjectStorage };
+
 export interface Env {
+  PAIRING: DurableObjectNamespace;
+  /** Rate limiting only — pairing state lives in Durable Objects. */
   PAIRINGS: KVNamespace;
   /** Bot token of the manager bot (create once via BotFather; enable Bot Management Mode). */
   MANAGER_BOT_TOKEN: string;
@@ -37,24 +58,25 @@ export interface Env {
 
 const USERNAME_PREFIX = 'assistant_';
 const USERNAME_SUFFIX = '_bot';
-// 16 chars from a 32-symbol alphabet = 80 bits of entropy; the full username
-// (10 + 16 + 4 = 30 chars) stays under Telegram's 32-char cap.
-const SLUG_LENGTH = 16;
+// 8 chars from a 32-symbol alphabet = 40 bits of entropy — still unguessable,
+// since testing a guess requires creating a real bot (Telegram caps ~20 per
+// account) inside the 5-minute pairing window. Kept short because the
+// username is permanent; full username is 10 + 8 + 4 = 22 chars.
+const SLUG_LENGTH = 8;
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 
 /** How long a pairing can be scanned/claimed. */
 const PAIRING_TTL_SECONDS = 300;
-// Keep the KV record around longer than the pairing itself so polls after
-// expiry/claim get a truthful 410 instead of a confusing 404.
-const KV_TTL_SECONDS = 1800;
+// Keep the record around after expiry/claim so late polls get a truthful 410
+// instead of a confusing 404; the alarm wipes the object after this.
+const RECORD_RETENTION_SECONDS = 1800;
 
 const RATE_LIMIT_PER_MINUTE = 10;
 const DEFAULT_BOT_NAME = 'My Personal Assistant';
 
 type Pairing = {
-  id: string;
+  id: string; // doubles as the username slug
   poll_token: string;
-  slug: string;
   suggested_username: string;
   bot_name: string;
   expires_at: string;
@@ -79,20 +101,89 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-async function loadPairing(env: Env, id: string): Promise<Pairing | null> {
-  const raw = await env.PAIRINGS.get(`pairing:${id}`);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as Pairing;
-  } catch {
-    return null;
+/** One pairing's lifecycle, strongly consistent. Addressed by slug. */
+export class PairingObject {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(req: Request): Promise<Response> {
+    const path = new URL(req.url).pathname;
+    const rec = await this.state.storage.get<Pairing>('rec');
+
+    if (path === '/create' && req.method === 'POST') {
+      if (rec) return json({ error: 'already_exists' }, 409);
+      const fresh = (await req.json()) as Pairing;
+      await this.state.storage.put('rec', fresh);
+      await this.state.storage.setAlarm(
+        Date.parse(fresh.expires_at) + RECORD_RETENTION_SECONDS * 1000
+      );
+      return json({ ok: true }, 201);
+    }
+
+    if (path === '/status' && req.method === 'GET') {
+      if (!rec) return json({ error: 'not_found' }, 404);
+      const auth = req.headers.get('Authorization') || '';
+      if (auth !== `Bearer ${rec.poll_token}`) return json({ error: 'unauthorized' }, 401);
+
+      if (rec.status === 'claimed') return json({ error: 'claimed' }, 410);
+      if (rec.status === 'error') {
+        return json({ error: rec.error || 'telegram_token_fetch_failed' }, 502);
+      }
+      if (rec.status === 'waiting') {
+        if (Date.now() > Date.parse(rec.expires_at)) return json({ error: 'expired' }, 410);
+        return json({ status: 'waiting', expires_at: rec.expires_at });
+      }
+      // ready — serve the token exactly once, then remember it was claimed.
+      const payload = {
+        status: 'ready',
+        token: rec.token,
+        bot_username: rec.bot_username,
+        owner_user_id: rec.owner_user_id,
+      };
+      rec.status = 'claimed';
+      delete rec.token;
+      await this.state.storage.put('rec', rec);
+      return json(payload);
+    }
+
+    if (path === '/complete' && req.method === 'POST') {
+      if (!rec) return json({ error: 'not_found' }, 404);
+      if (rec.status !== 'waiting') return json({ error: 'not_waiting', status: rec.status }, 409);
+      if (Date.now() > Date.parse(rec.expires_at)) return json({ error: 'expired' }, 410);
+      const body = (await req.json()) as {
+        token?: string;
+        bot_username?: string;
+        owner_user_id?: number;
+        error?: string;
+      };
+      if (body.token) {
+        rec.status = 'ready';
+        rec.token = body.token;
+        rec.bot_username = body.bot_username;
+        if (typeof body.owner_user_id === 'number' && body.owner_user_id > 0) {
+          rec.owner_user_id = body.owner_user_id;
+        }
+      } else {
+        rec.status = 'error';
+        rec.error = body.error || 'telegram_token_fetch_failed';
+      }
+      await this.state.storage.put('rec', rec);
+      return json({ ok: true });
+    }
+
+    return json({ error: 'not_found' }, 404);
+  }
+
+  async alarm(): Promise<void> {
+    await this.state.storage.deleteAll();
   }
 }
 
-async function savePairing(env: Env, rec: Pairing): Promise<void> {
-  await env.PAIRINGS.put(`pairing:${rec.id}`, JSON.stringify(rec), {
-    expirationTtl: KV_TTL_SECONDS,
-  });
+function pairingStub(env: Env, id: string): DurableObjectStub {
+  return env.PAIRING.get(env.PAIRING.idFromName(id));
+}
+
+function doRequest(stub: DurableObjectStub, path: string, init?: RequestInit): Promise<Response> {
+  return stub.fetch(new Request(`https://pairing${path}`, init));
 }
 
 async function rateLimited(env: Env, req: Request): Promise<boolean> {
@@ -123,9 +214,8 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
 
   const slug = randomString(SLUG_LENGTH);
   const rec: Pairing = {
-    id: randomString(16),
+    id: slug,
     poll_token: randomString(32),
-    slug,
     suggested_username: `${USERNAME_PREFIX}${slug}${USERNAME_SUFFIX}`,
     bot_name: botName,
     expires_at: new Date(Date.now() + PAIRING_TTL_SECONDS * 1000).toISOString(),
@@ -136,8 +226,12 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
     `https://t.me/newbot/${encodeURIComponent(env.MANAGER_BOT_USERNAME)}/` +
     `${encodeURIComponent(rec.suggested_username)}?name=${encodeURIComponent(botName)}`;
 
-  await savePairing(env, rec);
-  await env.PAIRINGS.put(`slug:${slug}`, rec.id, { expirationTtl: KV_TTL_SECONDS });
+  const created = await doRequest(pairingStub(env, slug), '/create', {
+    method: 'POST',
+    body: JSON.stringify(rec),
+  });
+  if (!created.ok) return json({ error: 'pairing_create_failed' }, 500);
+
   console.log(
     JSON.stringify({
       evt: 'pairing_created',
@@ -146,7 +240,6 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
       expires_at: rec.expires_at,
     })
   );
-
   return json(
     {
       pairing_id: rec.id,
@@ -161,37 +254,22 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
 }
 
 async function pollPairing(env: Env, req: Request, id: string): Promise<Response> {
-  const rec = await loadPairing(env, id);
-  console.log(JSON.stringify({ evt: 'poll', pairing_id: id, status: rec?.status ?? 'not_found' }));
-  if (!rec) return json({ error: 'not_found' }, 404);
-
-  const auth = req.headers.get('Authorization') || '';
-  if (auth !== `Bearer ${rec.poll_token}`) return json({ error: 'unauthorized' }, 401);
-
-  if (rec.status === 'claimed') return json({ error: 'claimed' }, 410);
-  if (rec.status === 'error') {
-    return json({ error: rec.error || 'telegram_token_fetch_failed' }, 502);
+  const res = await doRequest(pairingStub(env, id), '/status', {
+    headers: { Authorization: req.headers.get('Authorization') || '' },
+  });
+  const body = await res.text();
+  let status: string | undefined;
+  try {
+    const parsed = JSON.parse(body) as { status?: string; error?: string };
+    status = parsed.status ?? parsed.error;
+  } catch {
+    // leave undefined
   }
-  if (rec.status === 'waiting') {
-    if (Date.now() > Date.parse(rec.expires_at)) {
-      await env.PAIRINGS.delete(`slug:${rec.slug}`);
-      return json({ error: 'expired' }, 410);
-    }
-    return json({ status: 'waiting', expires_at: rec.expires_at });
-  }
-
-  // ready — serve the token exactly once, then remember it was claimed.
-  const payload = {
-    status: 'ready',
-    token: rec.token,
-    bot_username: rec.bot_username,
-    owner_user_id: rec.owner_user_id,
-  };
-  rec.status = 'claimed';
-  delete rec.token;
-  await savePairing(env, rec);
-  await env.PAIRINGS.delete(`slug:${rec.slug}`);
-  return json(payload);
+  console.log(JSON.stringify({ evt: 'poll', pairing_id: id, status: status ?? `http_${res.status}` }));
+  return new Response(body, {
+    status: res.status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
 }
 
 async function handleWebhook(env: Env, req: Request): Promise<Response> {
@@ -238,28 +316,10 @@ async function handleWebhook(env: Env, req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
-  const pairingId = await env.PAIRINGS.get(`slug:${match[1]}`);
-  const rec = pairingId ? await loadPairing(env, pairingId) : null;
-  if (!rec || rec.status !== 'waiting') {
-    console.log(
-      JSON.stringify({
-        evt: 'webhook_ignored',
-        reason: !pairingId ? 'slug_not_found' : !rec ? 'pairing_record_missing' : 'pairing_not_waiting',
-        slug: match[1],
-        status: rec?.status ?? null,
-      })
-    );
-    return json({ ok: true });
-  }
-  if (Date.now() > Date.parse(rec.expires_at)) {
-    console.log(JSON.stringify({ evt: 'webhook_ignored', reason: 'pairing_expired', pairing_id: rec.id }));
-    return json({ ok: true });
-  }
-
   // ManagedBotUpdated.user is "User that created the bot" — i.e. the owner.
-  const ownerRaw = mb.user?.id ?? mb.owner_user_id;
-  const owner = Number(ownerRaw);
+  const owner = Number(mb.user?.id ?? mb.owner_user_id);
 
+  let completion: { token?: string; bot_username?: string; owner_user_id?: number; error?: string };
   try {
     const res = await fetch(
       `https://api.telegram.org/bot${env.MANAGER_BOT_TOKEN}/getManagedBotToken`,
@@ -286,29 +346,34 @@ async function handleWebhook(env: Env, req: Request): Promise<Response> {
         description: data.description ?? null,
       })
     );
-    if (!data.ok || !token) throw new Error('empty token');
-    rec.status = 'ready';
-    rec.token = token;
-    rec.bot_username = username;
-    if (Number.isFinite(owner) && owner > 0) rec.owner_user_id = owner;
+    if (!data.ok || !token) throw new Error(data.description || 'empty token');
+    completion = {
+      token,
+      bot_username: username,
+      ...(Number.isFinite(owner) && owner > 0 ? { owner_user_id: owner } : {}),
+    };
   } catch (e) {
     console.log(
       JSON.stringify({
         evt: 'token_fetch_failed',
-        pairing_id: rec.id,
+        pairing_id: match[1],
         error: e instanceof Error ? e.message : String(e),
       })
     );
-    rec.status = 'error';
-    rec.error = 'telegram_token_fetch_failed';
+    completion = { error: 'telegram_token_fetch_failed' };
   }
-  await savePairing(env, rec);
+
+  const done = await doRequest(pairingStub(env, match[1]), '/complete', {
+    method: 'POST',
+    body: JSON.stringify(completion),
+  });
   console.log(
     JSON.stringify({
       evt: 'pairing_updated',
-      pairing_id: rec.id,
-      status: rec.status,
-      has_owner: Boolean(rec.owner_user_id),
+      pairing_id: match[1],
+      status: completion.token ? 'ready' : 'error',
+      accepted: done.ok,
+      has_owner: Boolean(completion.owner_user_id),
     })
   );
   return json({ ok: true });
@@ -330,14 +395,10 @@ export default {
 
     const hookMatch = path.match(/^\/webhook\/([^/]+)$/);
     if (hookMatch && req.method === 'POST') {
-      if (hookMatch[1] !== env.WEBHOOK_SECRET) {
-        console.log(JSON.stringify({ evt: 'webhook_rejected', reason: 'bad_secret' }));
-        return json({ error: 'unauthorized' }, 401);
-      }
+      if (hookMatch[1] !== env.WEBHOOK_SECRET) return json({ error: 'unauthorized' }, 401);
       return handleWebhook(env, req);
     }
 
-    console.log(JSON.stringify({ evt: 'unmatched_route', method: req.method, path }));
     return json({ error: 'not_found' }, 404);
   },
 };
