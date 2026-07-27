@@ -47,6 +47,7 @@ import {
   applyBotCommands,
   skipBacklog,
 } from './tg-listener.ts';
+import { setDashboardPort } from './dashboard-url.ts';
 
 // Default to 8000 (exe.dev's default port); fall back to 3000 if it's taken.
 // An explicit PORT env var always wins and is used as-is (no fallback).
@@ -440,5 +441,6 @@ function serve() {
 }
 
 const server = serve();
+setDashboardPort(server.port);
 
 console.log(`coding-agent-telegram-relay listening on http://localhost:${server.port}`);

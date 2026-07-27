@@ -23,6 +23,7 @@ import {
   type EngineStep,
 } from './engine.ts';
 import { currentEngine } from './engines.ts';
+import { getDashboardUrl } from './dashboard-url.ts';
 
 const INCOMING_DIR = resolve('./data/incoming');
 mkdirSync(INCOMING_DIR, { recursive: true });
@@ -442,10 +443,31 @@ async function deliverResult(
   // Aborted runs were stopped on purpose; the /stop or replacement message
   // already acknowledged that, so don't surface a scary error.
   if (result.aborted) return;
-  await sendTelegram(
-    `⚠️ <b>${escapeHtml(ENGINE_LABELS[getEngineId()])} error</b>\n${escapeHtml(result.error)}`,
-    { target }
-  );
+  await sendTelegram(formatRunError(result.error), { target });
+}
+
+// The CLI's raw sign-out error ("Not logged in · Please run /login") is
+// misleading over Telegram: /login reads like a bot command, and the user
+// isn't at a terminal anyway. Turn it into re-auth steps with a dashboard
+// link they can tap from their phone.
+const AUTH_ERROR_RE =
+  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized/i;
+
+function formatRunError(error: string): string {
+  const engine = getEngineId();
+  const label = ENGINE_LABELS[engine];
+  if (!AUTH_ERROR_RE.test(error)) {
+    return `⚠️ <b>${escapeHtml(label)} error</b>\n${escapeHtml(error)}`;
+  }
+  const url = getDashboardUrl();
+  const signIn = engine === 'claude' ? 'Sign in with Claude' : 'Sign in with Codex';
+  return [
+    `⚠️ <b>${escapeHtml(label)} got signed out</b>`,
+    'To sign back in from the dashboard:',
+    url ? `1. Open ${escapeHtml(url)}` : '1. Open the dashboard in your browser',
+    `2. Under “${escapeHtml(label)} authentication”, tap <b>Check now</b>`,
+    `3. Tap <b>${escapeHtml(signIn)}</b> and authorize`,
+  ].join('\n');
 }
 
 /** Render AskUserQuestion(s) as a text prompt the user can answer by typing. */

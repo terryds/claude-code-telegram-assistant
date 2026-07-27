@@ -90,7 +90,7 @@ export async function startQrPairing(): Promise<
     res = await fetch(`${baseUrl()}/v1/telegram/pairings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ bot_name: 'Coding Agent Relay' }),
+      body: JSON.stringify({ bot_name: 'My Personal Assistant' }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
