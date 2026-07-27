@@ -25,6 +25,12 @@ import {
 } from './claude-login.ts';
 import { startCodexLogin, cancelCodexLogin, codexLoginState } from './codex-login.ts';
 import {
+  startQrPairing,
+  pollQrPairing,
+  cancelQrPairing,
+  clearQrPairings,
+} from './qr-onboarding.ts';
+import {
   startListener,
   isRelayEnabled,
   setRelayEnabled,
@@ -234,6 +240,28 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json({ ok: true, bot: r.bot });
   }
 
+  // QR onboarding (managed bots): mint a pairing at the setup service, show
+  // the QR, poll until Telegram hands over the new bot's token. The poll
+  // response never contains the token itself — only the getMe result.
+  if (p === '/onboarding/qr/start' && m === 'POST') {
+    const r = await startQrPairing();
+    if (!r.ok) return err(502, r.error);
+    return json(r.pairing);
+  }
+
+  const qrPoll = p.match(/^\/onboarding\/qr\/([A-Za-z0-9]+)$/);
+  if (qrPoll && m === 'GET') {
+    const r = await pollQrPairing(qrPoll[1]);
+    if (!r) return err(404, 'Unknown pairing');
+    return json(r);
+  }
+
+  const qrCancel = p.match(/^\/onboarding\/qr\/([A-Za-z0-9]+)\/cancel$/);
+  if (qrCancel && m === 'POST') {
+    cancelQrPairing(qrCancel[1]);
+    return json({ ok: true });
+  }
+
   if (p === '/onboarding/start-capture' && m === 'POST') {
     if (!getSetting('telegram_bot_token')) return err(400, 'Save a bot token first');
     await skipBacklog();
@@ -329,6 +357,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     clearAllSessions();
     deleteSetting('captured_chat_id');
     deleteSetting('capture_chat_id');
+    clearQrPairings();
     unlinkAllGroups();
     return json({ ok: true });
   }

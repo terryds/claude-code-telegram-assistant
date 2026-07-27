@@ -56,6 +56,21 @@ export type Status = {
   auth: AuthConfig;
 };
 
+export type QrPairing = {
+  pairing_id: string;
+  suggested_username: string;
+  deep_link: string;
+  qr_payload: string;
+  expires_at: string;
+};
+
+export type QrPollResult =
+  | { status: 'waiting'; expires_at: string }
+  | { status: 'ready'; bot: BotInfo; chat_id: string | null }
+  | { status: 'expired' }
+  | { status: 'claimed' }
+  | { status: 'error'; error: string };
+
 export type AgentCheck = {
   installed: boolean;
   version?: string;
@@ -144,6 +159,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
+  qrStart: () => request<QrPairing>('/onboarding/qr/start', { method: 'POST' }),
+  qrPoll: (id: string) => request<QrPollResult>(`/onboarding/qr/${id}`),
+  qrCancel: (id: string) =>
+    request<{ ok: true }>(`/onboarding/qr/${id}/cancel`, { method: 'POST' }),
   startCapture: () =>
     request<{ ok: true }>('/onboarding/start-capture', { method: 'POST' }),
   cancelCapture: () =>
