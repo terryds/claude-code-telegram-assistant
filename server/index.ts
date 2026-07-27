@@ -24,6 +24,7 @@ import {
   claudeLoginStatus,
 } from './claude-login.ts';
 import { startCodexLogin, cancelCodexLogin, codexLoginState } from './codex-login.ts';
+import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
 import {
   startQrPairing,
   pollQrPairing,
@@ -326,6 +327,24 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       applyBotCommands().catch(() => {});
     }
     return json({ ok: true, enabled });
+  }
+
+  // Self-update: version info, remote check (git fetch), and launch of
+  // bin/safe-update-relay (detached — it restarts this process via pm2).
+  if (p === '/update/info' && m === 'GET') {
+    return json(updateInfo());
+  }
+
+  if (p === '/update/check' && m === 'POST') {
+    const r = checkForUpdates();
+    if (!r.ok) return err(502, r.error);
+    return json(r);
+  }
+
+  if (p === '/update/run' && m === 'POST') {
+    const r = startUpdate();
+    if (!r.ok) return err(409, r.error);
+    return json({ ok: true });
   }
 
   if (p === '/reset-session' && m === 'POST') {

@@ -71,6 +71,26 @@ export type QrPollResult =
   | { status: 'claimed' }
   | { status: 'error'; error: string };
 
+export type CommitInfo = { sha: string; subject: string; date?: string };
+
+export type UpdateState = {
+  phase: 'running' | 'failed' | 'success';
+  step?: string;
+  detail?: string;
+  old?: string;
+  new?: string;
+  ts: number;
+};
+
+export type UpdateInfo = {
+  current: CommitInfo | null;
+  managed: boolean;
+  running: boolean;
+  state: UpdateState | null;
+};
+
+export type UpdateCheck = { ok: true; behind: number; commits: CommitInfo[] };
+
 export type AgentCheck = {
   installed: boolean;
   version?: string;
@@ -189,6 +209,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  updateInfo: () => request<UpdateInfo>('/update/info'),
+  updateCheck: () => request<UpdateCheck>('/update/check', { method: 'POST' }),
+  updateRun: () => request<{ ok: true }>('/update/run', { method: 'POST' }),
   resetSession: () => request<{ ok: true }>('/reset-session', { method: 'POST' }),
   messages: (limit = 50) =>
     request<{ messages: MessageLogEntry[] }>(`/messages?limit=${limit}`),

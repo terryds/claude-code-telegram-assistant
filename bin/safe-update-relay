@@ -41,6 +41,17 @@ DELAY="${1:-6}"
 PROCESS_NAME="${RELAY_PROCESS_NAME:-coding-agent-telegram-relay}"
 REPO_DIR="${RELAY_REPO_DIR}"
 DB="$REPO_DIR/data/app.db"
+STATE_FILE="$REPO_DIR/data/update-state.json"
+
+# Progress/outcome for the dashboard's update card (read via /api/update/info
+# after the restart). Best-effort — never fails the deploy.
+write_state() { # phase step detail
+  mkdir -p "$REPO_DIR/data" 2>/dev/null || true
+  jq -n --arg phase "$1" --arg step "$2" --arg detail "$3" \
+    --arg old "${OLD_SHA:-}" --arg new "${NEW_SHA:-}" \
+    '{phase:$phase, step:$step, detail:($detail|.[0:1500]), old:$old, new:$new, ts:(now*1000|floor)}' \
+    > "$STATE_FILE" 2>/dev/null || true
+}
 
 sleep "$DELAY"
 START_TS=$(date +%s%3N)
@@ -61,12 +72,14 @@ notify() {
 fail() {
   local step="$1"
   local detail="$2"
+  write_state failed "$step" "$detail"
   notify "$(printf '❌ <b>Update failed at: %s</b>\n<pre>%s</pre>\nRelay left untouched.' \
     "$step" "$(echo "$detail" | head -c 1500 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')")"
   exit 1
 }
 
 cd "$REPO_DIR" || fail "cd" "Could not enter $REPO_DIR"
+write_state running "deploy" ""
 
 # Step 1: pull
 OLD_SHA=$(git rev-parse --short HEAD)
@@ -104,6 +117,7 @@ if [ "$STATUS" != "online" ]; then
 fi
 
 ELAPSED_MS=$(($(date +%s%3N) - START_TS))
+write_state success "done" ""
 
 # Step 6: notify success
 if [ "$OLD_SHA" = "$NEW_SHA" ]; then

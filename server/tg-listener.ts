@@ -24,6 +24,7 @@ import {
 } from './engine.ts';
 import { currentEngine } from './engines.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
+import { startUpdate } from './updater.ts';
 
 const INCOMING_DIR = resolve('./data/incoming');
 mkdirSync(INCOMING_DIR, { recursive: true });
@@ -689,6 +690,19 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     return;
   }
 
+  if (text === '/update' || text.startsWith('/update ')) {
+    const r = startUpdate();
+    if (!r.ok) {
+      await sendTelegram(`⚠️ ${escapeHtml(r.error)}`, { target });
+    } else {
+      await sendTelegram(
+        '🚀 <b>Updating…</b> pull → build → restart. I\'ll message you here when it\'s done.',
+        { target }
+      );
+    }
+    return;
+  }
+
   if (text === '/start' || text === '/help') {
     await sendTelegram(
       [
@@ -703,6 +717,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         '  /stop — interrupt the agent while it\'s working',
         '  /new_session — start a fresh conversation',
         '  /engine — show or switch the active engine (Claude Code / Codex)',
+        '  /update — pull the latest relay version and restart',
         '  /help — show this message',
       ].join('\n'),
       { target }
@@ -946,6 +961,7 @@ export async function applyBotCommands(): Promise<void> {
     { command: 'stop', description: 'Interrupt the agent while it is working' },
     { command: 'new_session', description: 'Start a new conversation' },
     { command: 'engine', description: 'Show or switch the active engine' },
+    { command: 'update', description: 'Update the relay and restart' },
     { command: 'help', description: 'Show usage' },
   ]);
 }

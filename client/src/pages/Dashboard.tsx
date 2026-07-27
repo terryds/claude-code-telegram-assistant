@@ -2,11 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import {
   api,
+  type CommitInfo,
   type EngineId,
   type FeedEvent,
   type GroupCaptureMode,
   type GroupLink,
   type Status,
+  type UpdateInfo,
 } from '../api';
 import { AgentAuth } from '../components/AgentAuth';
 
@@ -238,6 +240,13 @@ export function Dashboard({ status, onChange }: Props) {
 
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Updates
+        </h2>
+        <UpdateCard />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Activity
         </h2>
         {events.length === 0 ? (
@@ -253,6 +262,169 @@ export function Dashboard({ status, onChange }: Props) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function UpdateCard() {
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [check, setCheck] = useState<{ behind: number; commits: CommitInfo[] } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<number | null>(null);
+
+  const loadInfo = async () => {
+    try {
+      const r = await api.updateInfo();
+      setInfo(r);
+      // A restart may have happened while this page was open — an update
+      // "running" per the state file means we should be in the polling UI.
+      if (r.running) setUpdating(true);
+      return r;
+    } catch {
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    loadInfo();
+  }, []);
+
+  const runCheck = async () => {
+    setError(null);
+    setChecking(true);
+    try {
+      const r = await api.updateCheck();
+      setCheck({ behind: r.behind, commits: r.commits });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const runUpdate = async () => {
+    if (!confirm('Pull the latest version, rebuild, and restart the relay?')) return;
+    setError(null);
+    try {
+      await api.updateRun();
+      setUpdating(true);
+      setCheck(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // While updating, poll until the (restarted) server reports the outcome.
+  // Fetch failures are expected mid-restart — keep polling through them.
+  useEffect(() => {
+    if (!updating) return;
+    let stopped = false;
+    const tick = async () => {
+      const r = await loadInfo();
+      if (stopped) return;
+      if (r && !r.running) {
+        setUpdating(false);
+        return;
+      }
+      pollRef.current = window.setTimeout(tick, 2000);
+    };
+    pollRef.current = window.setTimeout(tick, 2000);
+    return () => {
+      stopped = true;
+      if (pollRef.current) window.clearTimeout(pollRef.current);
+    };
+  }, [updating]);
+
+  const state = info?.state ?? null;
+  const outcome =
+    !updating && state && state.phase !== 'running'
+      ? state.phase === 'success'
+        ? state.old && state.new && state.old !== state.new
+          ? `Last update: ✅ ${state.old} → ${state.new}`
+          : 'Last update: ✅ already up to date (rebuilt + restarted)'
+        : `Last update: ❌ failed at ${state.step ?? '?'}${state.detail ? ` — ${state.detail}` : ''}`
+      : null;
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-zinc-100">
+            Current version:{' '}
+            {info?.current ? (
+              <>
+                <code className="text-zinc-300">{info.current.sha}</code>{' '}
+                <span className="text-zinc-400">{info.current.subject}</span>
+              </>
+            ) : (
+              <span className="text-zinc-500">unknown</span>
+            )}
+          </p>
+          {info?.current?.date && (
+            <p className="text-zinc-500 text-xs mt-0.5">
+              committed {new Date(info.current.date).toLocaleString()}
+            </p>
+          )}
+        </div>
+        {!updating && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={runCheck}
+              disabled={checking}
+              className="px-3 py-1.5 border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 rounded text-xs font-medium disabled:opacity-50"
+            >
+              {checking ? 'Checking…' : 'Check for updates'}
+            </button>
+            {info?.managed && check && check.behind > 0 && (
+              <button
+                onClick={runUpdate}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-medium"
+              >
+                Update now
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {updating ? (
+        <div className="flex items-center gap-2 text-zinc-300">
+          <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+          Updating — pull, build, restart. The dashboard will reconnect by itself…
+        </div>
+      ) : (
+        <>
+          {check &&
+            (check.behind === 0 ? (
+              <p className="text-emerald-400">Up to date.</p>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-zinc-200">
+                  Update available — {check.behind} commit{check.behind === 1 ? '' : 's'} behind:
+                </p>
+                <ul className="text-xs text-zinc-400 space-y-0.5">
+                  {check.commits.map((c) => (
+                    <li key={c.sha}>
+                      <code className="text-zinc-500">{c.sha}</code> {c.subject}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          {info && !info.managed && (
+            <p className="text-zinc-500 text-xs">
+              Not running under pm2 — updates must be applied manually (git pull, bun run
+              build, restart). You can also send <code>/update</code> to the bot when
+              deployed.
+            </p>
+          )}
+          {outcome && <p className="text-zinc-500 text-xs">{outcome}</p>}
+        </>
+      )}
+
+      {error && <p className="text-red-400">{error}</p>}
     </div>
   );
 }
