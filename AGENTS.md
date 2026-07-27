@@ -22,6 +22,24 @@ raw URL on its own:
 https://example.com/#project/foo
 ```
 
+### Never send `localhost` / `0.0.0.0` URLs
+
+The user reads your reply on their phone, not on this host — a URL pointing at
+`localhost`, `127.0.0.1`, or `0.0.0.0` (e.g. the bind address a dev server
+prints) is dead on arrival. Before sharing a URL to anything running on this
+machine, resolve the host's reachable address and substitute it:
+
+```bash
+hostname -I | awk '{print $1}'   # Linux: first LAN/VPN IP
+ipconfig getifaddr en0           # macOS equivalent
+curl -s ifconfig.me              # public IP (VPS reachable from anywhere)
+hostname -f                      # or use the machine's DNS name if it resolves
+```
+
+Prefer whatever the user can actually reach (a VPS's public IP or DNS name; a
+LAN/Tailscale IP for a home machine), keep the port, e.g.
+`http://203.0.113.7:5173/` — never `http://0.0.0.0:5173/`.
+
 ## Messaging the user proactively (reminders, "tell me later")
 
 The relay is purely reactive: each incoming Telegram message spawns a one-shot
