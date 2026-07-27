@@ -1,0 +1,11 @@
+name = "relay-telegram-setup"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+[vars]
+# Username of your manager bot, without the @ (see README).
+MANAGER_BOT_USERNAME = "REPLACE_WITH_MANAGER_BOT_USERNAME"
+
+[[kv_namespaces]]
+binding = "PAIRINGS"
+id = "e70d629c3ae04d20887e6c5217ca508e"
