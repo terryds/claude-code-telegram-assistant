@@ -456,18 +456,37 @@ export function Onboarding({ status, onChange }: Props) {
             )
           ) : (
             <div>
-              <p className="text-zinc-400 text-sm mb-3">
-                Create a bot with{' '}
-                <a
-                  className="underline text-zinc-200"
-                  href="https://t.me/BotFather"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  @BotFather
-                </a>{' '}
-                and paste the token below.
-              </p>
+              <ol className="text-zinc-400 text-sm mb-4 space-y-1.5 list-decimal list-inside">
+                <li>
+                  Open{' '}
+                  <a
+                    className="underline text-zinc-200"
+                    href="https://t.me/BotFather"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    @BotFather
+                  </a>{' '}
+                  in Telegram and send{' '}
+                  <code className="text-zinc-200 bg-zinc-900 px-1 rounded">/newbot</code>
+                </li>
+                <li>
+                  Pick a display name — e.g.{' '}
+                  <span className="text-zinc-300">My Personal Assistant</span>
+                </li>
+                <li>
+                  Pick a username ending in <span className="text-zinc-300">bot</span> —
+                  e.g.{' '}
+                  <code className="text-zinc-200 bg-zinc-900 px-1 rounded">
+                    my_personal_assistant_bot
+                  </code>
+                </li>
+                <li>
+                  Copy the token BotFather replies with (looks like{' '}
+                  <code className="text-zinc-300">123456789:ABC…</code>) and paste it
+                  below
+                </li>
+              </ol>
               <div className="flex gap-2">
                 <input
                   type="password"
