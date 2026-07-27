@@ -49,7 +49,7 @@ const PAIRING_TTL_SECONDS = 300;
 const KV_TTL_SECONDS = 1800;
 
 const RATE_LIMIT_PER_MINUTE = 10;
-const DEFAULT_BOT_NAME = 'Coding Agent Relay';
+const DEFAULT_BOT_NAME = 'My Personal Assistant';
 
 type Pairing = {
   id: string;
