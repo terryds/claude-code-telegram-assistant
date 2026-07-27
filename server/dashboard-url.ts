@@ -1,16 +1,29 @@
 /**
  * Best-effort reachable URL for the dashboard, for inclusion in Telegram
  * messages. The user reads those on their phone, so `localhost` links are
- * dead on arrival — resolve the host's LAN/public IPv4 instead, with a
- * DASHBOARD_URL env override for setups behind a proxy or DNS name.
+ * dead on arrival — prefer the machine's FQDN if it has a real domain, then
+ * fall back to the host's LAN/public IPv4, with a DASHBOARD_URL env override
+ * for setups behind a proxy or DNS name.
  */
-import { networkInterfaces } from 'node:os';
+import { hostname, networkInterfaces } from 'node:os';
 
 let serverPort: number | null = null;
 
 /** Called once by the HTTP server after binding, with the actual port. */
 export function setDashboardPort(port: number | undefined): void {
   serverPort = port ?? null;
+}
+
+/**
+ * The OS hostname, but only when it's a fully-qualified domain name that a
+ * phone could plausibly resolve — i.e. it has a dot and isn't in a
+ * link-local/private suffix like `.local` (mDNS) or `.lan`.
+ */
+function fqdnHostname(): string | null {
+  const name = hostname().trim().replace(/\.$/, '').toLowerCase();
+  if (!name.includes('.')) return null;
+  if (/\.(local|localdomain|internal|intranet|lan|home|arpa)$/.test(name)) return null;
+  return name;
 }
 
 function hostAddress(): string | null {
@@ -32,7 +45,7 @@ export function getDashboardUrl(): string | null {
   const override = process.env.DASHBOARD_URL?.trim();
   if (override) return override.replace(/\/+$/, '');
   if (serverPort == null) return null;
-  const host = hostAddress();
+  const host = fqdnHostname() ?? hostAddress();
   if (!host) return null;
   return `http://${host}:${serverPort}`;
 }
