@@ -587,17 +587,8 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     // talk to the agent right away.
     setRelayEnabled(true);
     applyBotCommands().catch(() => {});
-    const label = ENGINE_LABELS[getEngineId()];
     // Acknowledge via the token used for this very chat — sendTelegram reads chat_id from settings.
-    await sendTelegram(
-      [
-        '✅ <b>Chat linked!</b>',
-        '',
-        `Chat ID: <code>${incomingChatId}</code>`,
-        '',
-        `You can now talk to ${escapeHtml(label)} via Telegram — just say "Hi!"`,
-      ].join('\n')
-    );
+    await sendTelegram("✅ You're all set. What can I help you with?");
     return;
   }
 

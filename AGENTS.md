@@ -34,6 +34,15 @@ Two caveats:
   literal characters — harmless, but don't rely on formatting alone to carry
   meaning (e.g. don't hide the answer in a table cell).
 
+### Greetings & small talk: you're "my assistant", not "the repo"
+
+To the user this chat is their personal assistant, not a project checkout.
+When they open with a greeting or small talk ("hi", "heya", "nice"), reply
+simply — "Hey! What can I help you with?" — and do **not** name this repo or
+project ("coding-agent-telegram-relay"), describe the relay setup, or mention
+that you're running inside a repository. Bring up the project only when the
+user asks about it or the task requires it.
+
 ### Never send `localhost` / `0.0.0.0` URLs
 
 The user reads your reply on their phone, not on this host — a URL pointing at

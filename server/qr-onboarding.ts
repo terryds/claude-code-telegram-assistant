@@ -197,15 +197,7 @@ async function applyPairing(
     setSetting('captured_chat_id', chatId);
     setRelayEnabled(true);
     applyBotCommands().catch(() => {});
-    sendTelegram(
-      [
-        '✅ <b>Bot created &amp; chat linked!</b>',
-        '',
-        `Chat ID: <code>${chatId}</code>`,
-        '',
-        'You can now talk to your coding agent here — just say "Hi!"',
-      ].join('\n')
-    ).catch(() => {});
+    sendTelegram('✅ You\'re all set. What can I help you with?').catch(() => {});
   } else {
     // No owner reported — token is saved, but the chat still needs the
     // classic capture step. Clear any stale link from a previous bot.

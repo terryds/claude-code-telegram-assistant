@@ -2,6 +2,10 @@ name = "relay-telegram-setup"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 [vars]
 # Username of your manager bot, without the @ (see README).
 MANAGER_BOT_USERNAME = "assistantmanagercody_bot"

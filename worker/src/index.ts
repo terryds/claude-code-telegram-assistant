@@ -138,6 +138,14 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
 
   await savePairing(env, rec);
   await env.PAIRINGS.put(`slug:${slug}`, rec.id, { expirationTtl: KV_TTL_SECONDS });
+  console.log(
+    JSON.stringify({
+      evt: 'pairing_created',
+      pairing_id: rec.id,
+      suggested_username: rec.suggested_username,
+      expires_at: rec.expires_at,
+    })
+  );
 
   return json(
     {
@@ -154,6 +162,7 @@ async function createPairing(env: Env, req: Request): Promise<Response> {
 
 async function pollPairing(env: Env, req: Request, id: string): Promise<Response> {
   const rec = await loadPairing(env, id);
+  console.log(JSON.stringify({ evt: 'poll', pairing_id: id, status: rec?.status ?? 'not_found' }));
   if (!rec) return json({ error: 'not_found' }, 404);
 
   const auth = req.headers.get('Authorization') || '';
@@ -187,6 +196,7 @@ async function pollPairing(env: Env, req: Request, id: string): Promise<Response
 
 async function handleWebhook(env: Env, req: Request): Promise<Response> {
   if (!env.MANAGER_BOT_TOKEN) {
+    console.log(JSON.stringify({ evt: 'webhook_error', reason: 'manager_token_not_configured' }));
     return json({ error: 'telegram_manager_bot_token_not_configured' }, 500);
   }
 
@@ -194,8 +204,19 @@ async function handleWebhook(env: Env, req: Request): Promise<Response> {
   try {
     update = await req.json();
   } catch {
+    console.log(JSON.stringify({ evt: 'webhook_ignored', reason: 'unparseable_body' }));
     return json({ ok: true });
   }
+
+  // Breadcrumb: which update types Telegram is actually sending us (never log
+  // the full payload — some update types can carry message content).
+  console.log(
+    JSON.stringify({
+      evt: 'webhook_update',
+      update_id: update?.update_id,
+      keys: Object.keys(update ?? {}).filter((k) => k !== 'update_id'),
+    })
+  );
 
   // Only managed_bot updates matter here (setWebhook is registered with
   // allowed_updates=["managed_bot"], but be defensive anyway).
@@ -205,14 +226,38 @@ async function handleWebhook(env: Env, req: Request): Promise<Response> {
   const match = username
     .toLowerCase()
     .match(new RegExp(`^${USERNAME_PREFIX}([a-z0-9]+)${USERNAME_SUFFIX}$`));
-  if (!mb || !bot?.id || !match) return json({ ok: true });
+  if (!mb || !bot?.id || !match) {
+    console.log(
+      JSON.stringify({
+        evt: 'webhook_ignored',
+        reason: !mb ? 'no_managed_bot_field' : !bot?.id ? 'no_bot_id' : 'username_mismatch',
+        managed_bot_keys: mb ? Object.keys(mb) : null,
+        bot_username: username || null,
+      })
+    );
+    return json({ ok: true });
+  }
 
   const pairingId = await env.PAIRINGS.get(`slug:${match[1]}`);
   const rec = pairingId ? await loadPairing(env, pairingId) : null;
-  if (!rec || rec.status !== 'waiting') return json({ ok: true });
-  if (Date.now() > Date.parse(rec.expires_at)) return json({ ok: true });
+  if (!rec || rec.status !== 'waiting') {
+    console.log(
+      JSON.stringify({
+        evt: 'webhook_ignored',
+        reason: !pairingId ? 'slug_not_found' : !rec ? 'pairing_record_missing' : 'pairing_not_waiting',
+        slug: match[1],
+        status: rec?.status ?? null,
+      })
+    );
+    return json({ ok: true });
+  }
+  if (Date.now() > Date.parse(rec.expires_at)) {
+    console.log(JSON.stringify({ evt: 'webhook_ignored', reason: 'pairing_expired', pairing_id: rec.id }));
+    return json({ ok: true });
+  }
 
-  const ownerRaw = mb.owner_user_id ?? mb.owner?.id ?? mb.from?.id;
+  // ManagedBotUpdated.user is "User that created the bot" — i.e. the owner.
+  const ownerRaw = mb.user?.id ?? mb.owner_user_id;
   const owner = Number(ownerRaw);
 
   try {
@@ -221,21 +266,51 @@ async function handleWebhook(env: Env, req: Request): Promise<Response> {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bot_id: bot.id }),
+        // A bot's id is a user id — the method takes user_id, not bot_id.
+        body: JSON.stringify({ user_id: bot.id }),
       }
     );
-    const data = (await res.json()) as { ok: boolean; result?: { token?: string } | string };
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { token?: string } | string;
+      description?: string;
+    };
     const token = typeof data.result === 'string' ? data.result : data.result?.token;
+    // Log the Telegram verdict, never the token itself.
+    console.log(
+      JSON.stringify({
+        evt: 'token_fetch',
+        http_status: res.status,
+        tg_ok: data.ok,
+        got_token: Boolean(token),
+        description: data.description ?? null,
+      })
+    );
     if (!data.ok || !token) throw new Error('empty token');
     rec.status = 'ready';
     rec.token = token;
     rec.bot_username = username;
     if (Number.isFinite(owner) && owner > 0) rec.owner_user_id = owner;
-  } catch {
+  } catch (e) {
+    console.log(
+      JSON.stringify({
+        evt: 'token_fetch_failed',
+        pairing_id: rec.id,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    );
     rec.status = 'error';
     rec.error = 'telegram_token_fetch_failed';
   }
   await savePairing(env, rec);
+  console.log(
+    JSON.stringify({
+      evt: 'pairing_updated',
+      pairing_id: rec.id,
+      status: rec.status,
+      has_owner: Boolean(rec.owner_user_id),
+    })
+  );
   return json({ ok: true });
 }
 
@@ -255,10 +330,14 @@ export default {
 
     const hookMatch = path.match(/^\/webhook\/([^/]+)$/);
     if (hookMatch && req.method === 'POST') {
-      if (hookMatch[1] !== env.WEBHOOK_SECRET) return json({ error: 'unauthorized' }, 401);
+      if (hookMatch[1] !== env.WEBHOOK_SECRET) {
+        console.log(JSON.stringify({ evt: 'webhook_rejected', reason: 'bad_secret' }));
+        return json({ error: 'unauthorized' }, 401);
+      }
       return handleWebhook(env, req);
     }
 
+    console.log(JSON.stringify({ evt: 'unmatched_route', method: req.method, path }));
     return json({ error: 'not_found' }, 404);
   },
 };
