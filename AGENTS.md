@@ -12,15 +12,27 @@ Telegram command); engine implementations live behind `server/engine.ts` /
 
 ## Replying over Telegram
 
-When your reply will be sent back to Telegram, output URLs as bare, unformatted
-links — never wrap them in Markdown emphasis (`**…**`, `*…*`, `_…_`) or link
-syntax. Telegram's parser mangles a URL wrapped in bold (e.g.
-`**https://example.com**`), producing a broken/incorrect link. Just paste the
-raw URL on its own:
+Your final reply is delivered via Telegram's **Rich Messages** API
+(`sendRichMessage`, Bot API 10.1+), which renders GitHub-Flavored Markdown
+natively. So write normal Markdown: headings, **bold**/_italic_, bullet and
+numbered lists, tables, blockquotes, `---` rules, and fenced code blocks with
+language tags all display properly, and the per-message limit is ~32k chars
+(the relay chunks anything longer on paragraph boundaries).
 
-```
-https://example.com/#project/foo
-```
+Two caveats:
+
+- **Prefer bare URLs** for links the user should open. Inline `[text](url)`
+  links render, but Telegram shows an "Open this link?" confirmation dialog
+  before following them — a bare URL on its own line is one tap:
+
+  ```
+  https://example.com/#project/foo
+  ```
+
+- If Telegram rejects the rich send (outdated Bot API server, pathological
+  markdown), the relay falls back to plain text and your Markdown arrives as
+  literal characters — harmless, but don't rely on formatting alone to carry
+  meaning (e.g. don't hide the answer in a table cell).
 
 ### Never send `localhost` / `0.0.0.0` URLs
 
@@ -55,9 +67,11 @@ bin/notify "your message"        # or pipe:  some-command | bin/notify
 
 It reads the bot token and linked chat id from the relay's settings DB
 (`data/app.db`), so it works even while the relay is down. Options:
-`--chat <id>` / `--thread <id>` to target a linked group topic, `--html` for
-Telegram-HTML (default is plain text — safest for piped output), `--dry-run`
-to print the request instead of sending.
+`--chat <id>` / `--thread <id>` to target a linked group topic, `--md` to
+send as a rich message (GitHub-Flavored Markdown — use this when piping
+agent output; falls back to plain text if rejected), `--html` for
+Telegram-HTML, `--dry-run` to print the request instead of sending. Default
+is plain text — safest for arbitrary piped output.
 
 To say something **later**, schedule a detached job that outlives your turn
 (same trick safe-update-relay uses). Use an absolute path — resolve it while
@@ -73,7 +87,7 @@ For "check X later and tell me" — a real agent turn, not canned text — have
 the scheduled job run a fresh headless turn and pipe the result:
 
 ```bash
-setsid nohup bash -c "sleep 7200 && cd $PWD && claude -p 'Check the deploy status of foo; summarize in 3 lines.' --permission-mode bypassPermissions 2>&1 | \"$N\"" >/dev/null 2>&1 &
+setsid nohup bash -c "sleep 7200 && cd $PWD && claude -p 'Check the deploy status of foo; summarize in 3 lines.' --permission-mode bypassPermissions 2>&1 | \"$N\" --md" >/dev/null 2>&1 &
 ```
 
 Prefer a fresh session with a self-contained prompt over `--resume`: resuming

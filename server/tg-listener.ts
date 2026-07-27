@@ -5,7 +5,7 @@ import {
   getTelegramConfig,
   getUpdatesRaw,
   sendTelegram,
-  sendTelegramPlain,
+  sendTelegramRich,
   sendChatAction,
   setMyCommands,
   downloadTelegramFile,
@@ -418,7 +418,9 @@ async function deliverResult(
       return;
     }
     const body = result.text || `(${ENGINE_LABELS[getEngineId()]} returned an empty response)`;
-    const r = await sendTelegramPlain(body, target);
+    // Agent replies are GitHub-Flavored Markdown; rich messages render it
+    // natively (falls back to plain text inside sendTelegramRich on rejection).
+    const r = await sendTelegramRich(body, target);
     logMessage({
       direction: 'out',
       text: body,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# notify [--chat <chat_id>] [--thread <thread_id>] [--html] [--dry-run] [message...]
+# notify [--chat <chat_id>] [--thread <thread_id>] [--md|--html] [--dry-run] [message...]
 #
 # Push a message to the linked Telegram chat, independent of the relay
 # process. Reads the bot token and default chat id from the relay's settings
@@ -12,6 +12,9 @@
 # Options:
 #   --chat <id>     target chat id (default: the linked telegram_chat_id)
 #   --thread <id>   message_thread_id, for linked group topics
+#   --md            send as a rich message (sendRichMessage, GitHub-Flavored
+#                   Markdown — best for agent output; falls back to plain
+#                   text if the API rejects it)
 #   --html          send with parse_mode=HTML (default: plain text — safest
 #                   for arbitrary/piped output, which HTML mode would reject)
 #   --dry-run       print the request bodies instead of sending
@@ -26,6 +29,7 @@ DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
 CHAT_ID=""
 THREAD_ID=""
 HTML=0
+MD=0
 DRY_RUN=0
 MSG_ARGS=()
 
@@ -33,12 +37,18 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --chat)    CHAT_ID="${2:?--chat needs a value}"; shift 2 ;;
     --thread)  THREAD_ID="${2:?--thread needs a value}"; shift 2 ;;
+    --md)      MD=1; shift ;;
     --html)    HTML=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         MSG_ARGS+=("$1"); shift ;;
   esac
 done
+
+if [ "$MD" = 1 ] && [ "$HTML" = 1 ]; then
+  echo "notify: --md and --html are mutually exclusive" >&2
+  exit 1
+fi
 
 if [ ${#MSG_ARGS[@]} -gt 0 ]; then
   MSG="${MSG_ARGS[*]}"
@@ -46,8 +56,10 @@ else
   MSG="$(cat)"
 fi
 # Empty message → silent no-op, so `agent-check | notify` cron jobs that
-# output nothing on quiet runs don't error or trigger cron mail.
-if [ -z "${MSG//[[:space:]]/}" ]; then
+# output nothing on quiet runs don't error or trigger cron mail. (Glob match,
+# not ${MSG//…/} substitution: the latter is quadratic in bash and hangs for
+# minutes on large piped input.)
+if [[ "$MSG" != *[![:space:]]* ]]; then
   exit 0
 fi
 
@@ -64,29 +76,58 @@ if [ -z "$CHAT_ID" ]; then
   exit 1
 fi
 
-# Telegram caps messages at 4096 UTF-16 code units; chunk conservatively
-# (bash slices by codepoint, and emoji count double in UTF-16).
-MAX=3500
+# Telegram caps plain messages at 4096 UTF-16 code units and rich messages at
+# 32768 UTF-8 characters; chunk conservatively (bash slices by codepoint, and
+# emoji count double in UTF-16).
+MAX_PLAIN=3500
+MAX_MD=30000
 
-while [ -n "$MSG" ]; do
-  CHUNK="${MSG:0:$MAX}"
-  MSG="${MSG:$MAX}"
-  BODY="$(jq -n --arg cid "$CHAT_ID" --arg t "$CHUNK" --arg tid "$THREAD_ID" \
-    --argjson html "$HTML" \
-    '{chat_id: $cid, text: $t, disable_web_page_preview: true}
-     + (if $tid != "" then {message_thread_id: ($tid | tonumber)} else {} end)
-     + (if $html == 1 then {parse_mode: "HTML"} else {} end)')"
-
-  if [ "$DRY_RUN" = "1" ]; then
-    echo "$BODY"
-    continue
-  fi
-
+# tg_post <method> <body> → 0 if Telegram accepted; response in $RESP.
+tg_post() {
   RESP="$(curl -s --max-time 15 -X POST \
-    "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    -H 'Content-Type: application/json' -d "$BODY")"
-  if ! echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
-    echo "notify: send failed: $RESP" >&2
-    exit 1
-  fi
-done
+    "https://api.telegram.org/bot${TOKEN}/$1" \
+    -H 'Content-Type: application/json' -d "$2")"
+  echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1
+}
+
+# send_plain <text> — chunked sendMessage; honors $HTML; exits on failure.
+send_plain() {
+  local rest="$1" chunk body
+  while [ -n "$rest" ]; do
+    chunk="${rest:0:$MAX_PLAIN}"
+    rest="${rest:$MAX_PLAIN}"
+    body="$(jq -n --arg cid "$CHAT_ID" --arg t "$chunk" --arg tid "$THREAD_ID" \
+      --argjson html "$HTML" \
+      '{chat_id: $cid, text: $t, disable_web_page_preview: true}
+       + (if $tid != "" then {message_thread_id: ($tid | tonumber)} else {} end)
+       + (if $html == 1 then {parse_mode: "HTML"} else {} end)')"
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "$body"
+      continue
+    fi
+    if ! tg_post sendMessage "$body"; then
+      echo "notify: send failed: $RESP" >&2
+      exit 1
+    fi
+  done
+}
+
+if [ "$MD" = 1 ]; then
+  while [ -n "$MSG" ]; do
+    CHUNK="${MSG:0:$MAX_MD}"
+    MSG="${MSG:$MAX_MD}"
+    BODY="$(jq -n --arg cid "$CHAT_ID" --arg t "$CHUNK" --arg tid "$THREAD_ID" \
+      '{chat_id: $cid, rich_message: {markdown: $t}}
+       + (if $tid != "" then {message_thread_id: ($tid | tonumber)} else {} end)')"
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "$BODY"
+      continue
+    fi
+    if ! tg_post sendRichMessage "$BODY"; then
+      echo "notify: rich send failed ($RESP); falling back to plain text" >&2
+      send_plain "$CHUNK"
+    fi
+  done
+else
+  send_plain "$MSG"
+fi

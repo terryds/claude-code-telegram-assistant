@@ -221,6 +221,62 @@ export async function sendTelegramPlain(
   return { ok: true };
 }
 
+// Rich messages (Bot API 10.1+) allow up to 32768 UTF-8 characters; stay
+// comfortably under since we measure UTF-16 units and emoji count double.
+const MAX_TG_RICH = 30000;
+
+/** Split markdown near `max`, preferring paragraph then line boundaries. */
+function splitMarkdown(text: string, max: number): string[] {
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n\n', max);
+    if (cut < max / 2) cut = rest.lastIndexOf('\n', max);
+    if (cut < max / 2) cut = max;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+/**
+ * Send GitHub-Flavored Markdown as a Telegram rich message (Bot API 10.1+).
+ * If the API rejects the rich send (older Bot API, pathological markdown),
+ * falls back to the plain-text path so delivery never regresses.
+ */
+export async function sendTelegramRich(
+  markdown: string,
+  target?: SendTarget
+): Promise<{ ok: boolean; error?: string }> {
+  const { botToken, chatId } = getTelegramConfig();
+  const dest = target ?? (chatId ? { chatId } : null);
+  if (!botToken || !dest) return { ok: false, error: 'Telegram not configured' };
+  for (const chunk of splitMarkdown(markdown, MAX_TG_RICH)) {
+    let rejection: string;
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendRichMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: dest.chatId,
+          ...(dest.threadId ? { message_thread_id: dest.threadId } : {}),
+          rich_message: { markdown: chunk },
+        }),
+      });
+      const data = (await res.json()) as { ok: boolean; description?: string };
+      if (data.ok) continue;
+      rejection = data.description || `Telegram HTTP ${res.status}`;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    console.warn(`[telegram] sendRichMessage rejected (${rejection}); sending as plain text`);
+    const r = await sendTelegramPlain(chunk, dest);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
 export async function sendChatAction(action: string, target?: SendTarget): Promise<void> {
   const { botToken, chatId } = getTelegramConfig();
   const dest = target ?? (chatId ? { chatId } : null);
