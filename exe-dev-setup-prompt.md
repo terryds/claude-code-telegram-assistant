@@ -21,7 +21,7 @@ It's a single-user, self-hosted relay that forwards Telegram messages to a codin
      pm2 save
      pm2 startup   # run the command it prints so it survives reboot
 5. Confirm it's listening on 8000 with no errors (`pm2 logs coding-agent-telegram-relay --lines 20`).
-6. Tell me the public URL for port 8000 on this VM — that's the dashboard. I'll finish setup there myself: choose Claude Code or Codex, sign in (subscription, right in the page — or paste an API key), then connect Telegram with a bot token from @BotFather (or the QR-scan option, where Telegram creates the bot for me).
+6. Tell me the public URL for port 8000 on this VM — that's the dashboard. Use the VM's full domain name (from `hostname -f`, e.g. https://<vm-name>.exe.xyz:8000) — do NOT give me an IP-address URL. I'll finish setup there myself: choose Claude Code or Codex, sign in (subscription, right in the page — or paste an API key), then connect Telegram with a bot token from @BotFather (or the QR-scan option, where Telegram creates the bot for me).
 
 Do NOT set the Telegram bot token or chat ID, and do NOT authenticate the agent CLIs — those all happen in the dashboard onboarding UI.
 ```

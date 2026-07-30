@@ -62,6 +62,20 @@ db.run(`
   )
 `);
 
+// User-managed links to other apps running on this host (or anywhere) —
+// shown at the top of the dashboard. `favicon` is a data: URI fetched
+// server-side so icons render even when the target app is temporarily down.
+db.run(`
+  CREATE TABLE IF NOT EXISTS bookmarks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    favicon TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+`);
+
 export function getSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
     | { value: string }
@@ -77,6 +91,55 @@ export function setSetting(key: string, value: string): void {
 
 export function deleteSetting(key: string): void {
   db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+export type Bookmark = {
+  id: number;
+  url: string;
+  title: string;
+  favicon: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export function listBookmarks(): Bookmark[] {
+  return db
+    .prepare('SELECT * FROM bookmarks ORDER BY created_at ASC, id ASC')
+    .all() as Bookmark[];
+}
+
+export function getBookmark(id: number): Bookmark | null {
+  return (db.prepare('SELECT * FROM bookmarks WHERE id = ?').get(id) as Bookmark | undefined) ?? null;
+}
+
+export function addBookmark(entry: { url: string; title: string; favicon?: string | null }): Bookmark {
+  const now = Date.now();
+  const r = db
+    .prepare(
+      'INSERT INTO bookmarks (url, title, favicon, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+    )
+    .run(entry.url, entry.title, entry.favicon ?? null, now, now);
+  return getBookmark(Number(r.lastInsertRowid))!;
+}
+
+export function updateBookmark(
+  id: number,
+  patch: { url?: string; title?: string; favicon?: string | null }
+): Bookmark | null {
+  const existing = getBookmark(id);
+  if (!existing) return null;
+  db.prepare('UPDATE bookmarks SET url = ?, title = ?, favicon = ?, updated_at = ? WHERE id = ?').run(
+    patch.url ?? existing.url,
+    patch.title ?? existing.title,
+    patch.favicon === undefined ? existing.favicon : patch.favicon,
+    Date.now(),
+    id
+  );
+  return getBookmark(id);
+}
+
+export function deleteBookmark(id: number): boolean {
+  return db.prepare('DELETE FROM bookmarks WHERE id = ?').run(id).changes > 0;
 }
 
 export type MessageLogEntry = {

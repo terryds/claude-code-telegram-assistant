@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import {
   api,
+  type Bookmark,
   type CommitInfo,
   type EngineId,
   type FeedEvent,
@@ -172,6 +173,13 @@ export function Dashboard({ status, onChange }: Props) {
         </div>
       )}
 
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Bookmarks
+        </h2>
+        <BookmarksCard />
+      </section>
+
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <button
           onClick={toggleRelay}
@@ -264,6 +272,295 @@ export function Dashboard({ status, onChange }: Props) {
       </section>
     </div>
   );
+}
+
+function BookmarksCard() {
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  // Which form is open: 'add', a bookmark id (edit), or null.
+  const [editing, setEditing] = useState<'add' | number | null>(null);
+  const [formUrl, setFormUrl] = useState('');
+  const [formTitle, setFormTitle] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await api.bookmarks();
+      setBookmarks(r.bookmarks);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // The agent adds bookmarks from Telegram runs — pick those up while the
+    // dashboard sits open, without hammering the API.
+    const id = window.setInterval(load, 15000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const openAdd = () => {
+    setEditing('add');
+    setFormUrl('');
+    setFormTitle('');
+    setError(null);
+  };
+
+  const openEdit = (b: Bookmark) => {
+    setEditing(b.id);
+    setFormUrl(b.url);
+    setFormTitle(b.title);
+    setError(null);
+  };
+
+  const closeForm = () => {
+    setEditing(null);
+    setError(null);
+  };
+
+  const submit = async () => {
+    const url = formUrl.trim();
+    if (!url) return;
+    setSaving(true);
+    setError(null);
+    try {
+      if (editing === 'add') {
+        await api.addBookmark({ url, title: formTitle.trim() || undefined });
+      } else if (typeof editing === 'number') {
+        await api.updateBookmark(editing, { url, title: formTitle.trim() || undefined });
+      }
+      setEditing(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const refreshMeta = async () => {
+    if (typeof editing !== 'number') return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await api.refreshBookmark(editing);
+      if (!r.reachable) {
+        setError("Couldn't reach the page — kept the existing title and icon.");
+      } else {
+        setEditing(null);
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (b: Bookmark) => {
+    if (!confirm(`Remove bookmark "${b.title}"?`)) return;
+    setBusyId(b.id);
+    setError(null);
+    try {
+      await api.deleteBookmark(b.id);
+      if (editing === b.id) setEditing(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const formOpen = editing !== null;
+
+  return (
+    <div className="space-y-3">
+      {loaded && bookmarks.length === 0 && !formOpen && (
+        <p className="text-zinc-400 text-sm">
+          Quick links to your other apps — anything running on another port or host.
+          New projects the agent deploys get added here automatically.
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {bookmarks.map((b) => (
+          <div
+            key={b.id}
+            className="group relative rounded-lg border border-zinc-800 bg-zinc-900/30 hover:bg-zinc-900/70 hover:border-zinc-700 transition-colors"
+          >
+            <a
+              href={b.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-3 p-3 pr-16"
+              title={b.url}
+            >
+              <BookmarkIcon bookmark={b} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-zinc-100 truncate">
+                  {b.title}
+                </span>
+                <span className="block text-xs text-zinc-500 truncate">
+                  {displayHost(b.url)}
+                </span>
+              </span>
+            </a>
+            <span className="absolute top-1/2 -translate-y-1/2 right-2 flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
+              <button
+                onClick={() => openEdit(b)}
+                className="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                title="Edit bookmark"
+                aria-label={`Edit ${b.title}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                </svg>
+              </button>
+              <button
+                onClick={() => remove(b)}
+                disabled={busyId === b.id}
+                className="p-1.5 rounded text-zinc-400 hover:text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                title="Remove bookmark"
+                aria-label={`Remove ${b.title}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          </div>
+        ))}
+
+        {!formOpen && loaded && (
+          <button
+            onClick={openAdd}
+            className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-700 hover:border-zinc-500 text-zinc-400 hover:text-zinc-200 p-3 text-sm transition-colors min-h-[3.5rem]"
+          >
+            <span className="text-base leading-none">+</span> Add bookmark
+          </button>
+        )}
+      </div>
+
+      {formOpen && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+          className="rounded-lg border border-zinc-700 bg-zinc-900/50 p-4 space-y-3 text-sm"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-xs uppercase tracking-wide text-zinc-500 mb-1">
+                URL
+              </span>
+              <input
+                autoFocus
+                value={formUrl}
+                onChange={(e) => setFormUrl(e.target.value)}
+                placeholder="myapp.example.com:3001"
+                className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs uppercase tracking-wide text-zinc-500 mb-1">
+                Title <span className="normal-case text-zinc-600">(optional)</span>
+              </span>
+              <input
+                value={formTitle}
+                onChange={(e) => setFormTitle(e.target.value)}
+                placeholder="Fetched from the page if left empty"
+                className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
+              />
+            </label>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="submit"
+              disabled={saving || !formUrl.trim()}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
+            >
+              {saving
+                ? 'Fetching title & icon…'
+                : editing === 'add'
+                  ? 'Add'
+                  : 'Save'}
+            </button>
+            {typeof editing === 'number' && (
+              <button
+                type="button"
+                onClick={refreshMeta}
+                disabled={saving}
+                className="px-3 py-1.5 border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 rounded text-sm disabled:opacity-50"
+                title="Fetch the page again and update its title and icon"
+              >
+                Re-fetch title & icon
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={closeForm}
+              disabled={saving}
+              className="text-zinc-400 hover:text-zinc-200 underline disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+          {error && <p className="text-red-400">{error}</p>}
+        </form>
+      )}
+
+      {error && !formOpen && <p className="text-red-400 text-sm">{error}</p>}
+    </div>
+  );
+}
+
+/** Favicon if we have one; otherwise a colored letter tile derived from the host. */
+function BookmarkIcon({ bookmark }: { bookmark: Bookmark }) {
+  const [broken, setBroken] = useState(false);
+  if (bookmark.favicon && !broken) {
+    return (
+      <img
+        src={bookmark.favicon}
+        alt=""
+        onError={() => setBroken(true)}
+        className="w-6 h-6 rounded shrink-0 object-contain"
+      />
+    );
+  }
+  const letter = (bookmark.title.trim()[0] ?? '?').toUpperCase();
+  const hue = hostHue(bookmark.url);
+  return (
+    <span
+      className="w-6 h-6 rounded shrink-0 flex items-center justify-center text-xs font-semibold text-white"
+      style={{ backgroundColor: `hsl(${hue} 45% 40%)` }}
+      aria-hidden
+    >
+      {letter}
+    </span>
+  );
+}
+
+function hostHue(url: string): number {
+  let h = 0;
+  const s = displayHost(url);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+}
+
+function displayHost(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return url;
+  }
 }
 
 function UpdateCard() {

@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# bookmark [--title <title>] <url>
+# bookmark --list
+# bookmark --remove <url-or-id>
+#
+# Manage the dashboard's Bookmarks section from the command line — the way
+# agent runs register newly deployed apps so the user can navigate between
+# them. Prefers the relay's HTTP API (which fetches the page's title and
+# favicon); if the relay isn't running, falls back to inserting directly into
+# the settings DB (data/app.db) without an icon.
+#
+# Options:
+#   --title <t>     bookmark title (default: fetched from the page / the host)
+#   --list          print existing bookmarks (id, title, url)
+#   --remove <x>    delete by id or by exact URL
+#
+# Env: RELAY_DB overrides the DB path; RELAY_PORT pins the API port
+# (otherwise $PORT, 8000, 3000 are probed).
+
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
+
+TITLE=""
+URL=""
+MODE="add"
+REMOVE_ARG=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --title)  TITLE="${2:?--title needs a value}"; shift 2 ;;
+    --list)   MODE="list"; shift ;;
+    --remove) MODE="remove"; REMOVE_ARG="${2:?--remove needs an id or url}"; shift 2 ;;
+    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)        URL="$1"; shift ;;
+  esac
+done
+
+# Find the relay's API base URL by probing likely ports for /api/status.
+api_base() {
+  local candidates=()
+  [ -n "${RELAY_PORT:-}" ] && candidates+=("$RELAY_PORT")
+  [ -n "${PORT:-}" ] && candidates+=("$PORT")
+  candidates+=(8000 3000)
+  local seen="" port
+  for port in "${candidates[@]}"; do
+    case " $seen " in *" $port "*) continue ;; esac
+    seen="$seen $port"
+    if curl -s --max-time 2 "http://127.0.0.1:${port}/api/status" \
+        | jq -e 'has("relay_enabled")' >/dev/null 2>&1; then
+      echo "http://127.0.0.1:${port}/api"
+      return 0
+    fi
+  done
+  return 1
+}
+
+BASE="$(api_base || true)"
+
+case "$MODE" in
+  list)
+    if [ -n "$BASE" ]; then
+      curl -s --max-time 10 "$BASE/bookmarks" \
+        | jq -r '.bookmarks[] | "\(.id)\t\(.title)\t\(.url)"'
+    else
+      sqlite3 -separator $'\t' "$DB" "SELECT id, title, url FROM bookmarks ORDER BY id" 2>/dev/null
+    fi
+    ;;
+
+  remove)
+    if [ -n "$BASE" ]; then
+      ID="$REMOVE_ARG"
+      if ! [[ "$ID" =~ ^[0-9]+$ ]]; then
+        ID="$(curl -s --max-time 10 "$BASE/bookmarks" \
+          | jq -r --arg u "$REMOVE_ARG" '.bookmarks[] | select(.url == $u) | .id' | head -1)"
+      fi
+      if [ -z "$ID" ]; then
+        echo "bookmark: no bookmark matching '$REMOVE_ARG'" >&2
+        exit 1
+      fi
+      curl -s --max-time 10 -X DELETE "$BASE/bookmarks/$ID" | jq -e '.ok == true' >/dev/null \
+        && echo "removed bookmark $ID" \
+        || { echo "bookmark: remove failed" >&2; exit 1; }
+    else
+      if [[ "$REMOVE_ARG" =~ ^[0-9]+$ ]]; then
+        sqlite3 "$DB" "DELETE FROM bookmarks WHERE id = $REMOVE_ARG"
+      else
+        sqlite3 "$DB" "DELETE FROM bookmarks WHERE url = '$(printf %s "$REMOVE_ARG" | sed "s/'/''/g")'"
+      fi
+      echo "removed (direct DB)"
+    fi
+    ;;
+
+  add)
+    if [ -z "$URL" ]; then
+      echo "bookmark: usage: bookmark [--title <title>] <url>" >&2
+      exit 1
+    fi
+    if [ -n "$BASE" ]; then
+      # Skip duplicates so re-deploys don't pile up copies of the same link.
+      # (Refresh only fills in a missing favicon — never clobbers a title the
+      # user may have customized in the dashboard.)
+      STRIP="$(printf %s "$URL" | sed -E 's#^https?://##; s#/+$##')"
+      EXISTING="$(curl -s --max-time 10 "$BASE/bookmarks" \
+        | jq -c --arg s "$STRIP" \
+          '.bookmarks[] | select((.url | sub("^https?://"; "") | sub("/+$"; "")) == $s)' | head -1)"
+      if [ -n "$EXISTING" ]; then
+        ID="$(echo "$EXISTING" | jq -r '.id')"
+        if echo "$EXISTING" | jq -e '.favicon == null' >/dev/null; then
+          echo "already bookmarked (id $ID) — fetching missing icon"
+          curl -s --max-time 30 -X POST "$BASE/bookmarks/$ID/refresh" >/dev/null
+        else
+          echo "already bookmarked (id $ID)"
+        fi
+        exit 0
+      fi
+      BODY="$(jq -n --arg u "$URL" --arg t "$TITLE" \
+        '{url: $u} + (if $t != "" then {title: $t} else {} end)')"
+      RESP="$(curl -s --max-time 30 -X POST "$BASE/bookmarks" \
+        -H 'Content-Type: application/json' -d "$BODY")"
+      if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+        echo "bookmarked: $(echo "$RESP" | jq -r '.bookmark.title') → $(echo "$RESP" | jq -r '.bookmark.url')"
+      else
+        echo "bookmark: add failed: $RESP" >&2
+        exit 1
+      fi
+    else
+      # Relay down — insert directly (no favicon; title falls back to the URL
+      # host). The dashboard's "Re-fetch title & icon" can fill it in later.
+      case "$URL" in http://*|https://*) FULL="$URL" ;; *) FULL="http://$URL" ;; esac
+      T="${TITLE:-$(printf %s "$FULL" | sed -E 's#^https?://##; s#[/?].*$##')}"
+      NOW="$(date +%s)000"
+      Q() { printf %s "$1" | sed "s/'/''/g"; }
+      sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS bookmarks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL, title TEXT NOT NULL, favicon TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        INSERT INTO bookmarks (url, title, favicon, created_at, updated_at)
+        SELECT '$(Q "$FULL")', '$(Q "$T")', NULL, $NOW, $NOW
+        WHERE NOT EXISTS (SELECT 1 FROM bookmarks WHERE url = '$(Q "$FULL")');"
+      echo "bookmarked (direct DB): $T → $FULL"
+    fi
+    ;;
+esac

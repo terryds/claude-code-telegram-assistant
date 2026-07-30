@@ -48,18 +48,57 @@ user asks about it or the task requires it.
 The user reads your reply on their phone, not on this host — a URL pointing at
 `localhost`, `127.0.0.1`, or `0.0.0.0` (e.g. the bind address a dev server
 prints) is dead on arrival. Before sharing a URL to anything running on this
-machine, resolve the host's reachable address and substitute it:
+machine, resolve the host's reachable address and substitute it.
+
+**Always prefer the machine's full domain name over an IP address.** Get it
+with `hostname -f` and use it in the URL whenever it resolves to a real,
+publicly-reachable domain (contains a dot and isn't a bare local name like
+`myhost` or `myhost.local`/`.localdomain`):
 
 ```bash
-hostname -I | awk '{print $1}'   # Linux: first LAN/VPN IP
-ipconfig getifaddr en0           # macOS equivalent
-curl -s ifconfig.me              # public IP (VPS reachable from anywhere)
-hostname -f                      # or use the machine's DNS name if it resolves
+hostname -f                      # full domain name — USE THIS if it resolves
 ```
 
-Prefer whatever the user can actually reach (a VPS's public IP or DNS name; a
-LAN/Tailscale IP for a home machine), keep the port, e.g.
-`http://203.0.113.7:5173/` — never `http://0.0.0.0:5173/`.
+Only if `hostname -f` yields no usable domain, fall back to an IP:
+
+```bash
+curl -s ifconfig.me              # public IP (VPS reachable from anywhere)
+hostname -I | awk '{print $1}'   # Linux: first LAN/VPN IP
+ipconfig getifaddr en0           # macOS equivalent
+```
+
+Prefer whatever the user can actually reach (a VPS's DNS name over its IP; a
+Tailscale MagicDNS name over a LAN IP for a home machine), keep the port, e.g.
+`http://my-vps.example.com:5173/` — an IP like `http://203.0.113.7:5173/` only
+as a last resort, and never `http://0.0.0.0:5173/`.
+
+## Bookmark every newly deployed app
+
+The dashboard's homepage has a **Bookmarks** section — the user's launcher for
+navigating between the apps you've built for them. **Whenever the user asks
+you to create a new project and it ends up successfully deployed and running
+on its own port, add it to the bookmarks** before you finish the turn:
+
+```bash
+bin/bookmark "http://$(hostname -f):3001"                    # title/favicon auto-fetched
+bin/bookmark --title "My Notes App" "http://$(hostname -f):3001"   # explicit title
+```
+
+Rules:
+
+- Use the same reachable-URL rules as for links in replies: full domain name
+  from `hostname -f` when it's a real domain, IP only as a last resort —
+  never `localhost`.
+- Only bookmark apps that are actually up and reachable (the relay fetches
+  the page's title and favicon when adding — a dead URL gets neither).
+- `bin/bookmark` is idempotent per URL (re-running refreshes the title/icon
+  instead of duplicating), works even while the relay is down (direct DB
+  fallback), and also supports `--list` and `--remove <url-or-id>` — do that
+  cleanup when the user asks to remove a project.
+- If the app moves to a different port later, remove the old bookmark and add
+  the new one.
+
+Mention in your reply that the app was added to the dashboard's bookmarks.
 
 ## Messaging the user proactively (reminders, "tell me later")
 

@@ -1,6 +1,18 @@
 import { resolve, extname } from 'node:path';
 import { existsSync, statSync, readFileSync } from 'node:fs';
-import { getSetting, setSetting, deleteSetting, recentMessages, recentFeed } from './db.ts';
+import {
+  getSetting,
+  setSetting,
+  deleteSetting,
+  recentMessages,
+  recentFeed,
+  listBookmarks,
+  getBookmark,
+  addBookmark,
+  updateBookmark,
+  deleteBookmark,
+} from './db.ts';
+import { fetchBookmarkMeta } from './bookmark-meta.ts';
 import { getBotInfo, getRecentChats, getTelegramConfig } from './telegram.ts';
 import {
   ENGINE_IDS,
@@ -93,6 +105,22 @@ async function readBody<T = unknown>(req: Request): Promise<T> {
 
 function isOnboarded(): boolean {
   return Boolean(getSetting('telegram_bot_token') && getSetting('telegram_chat_id'));
+}
+
+/** "myapp.example.com:3001" — the fallback bookmark title when a page has none. */
+function hostLabel(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return url;
+  }
+}
+
+/** Whether an edited URL actually points somewhere new (ignoring scheme guessing). */
+function normalizedUrlChanged(input: string, current: string): boolean {
+  const strip = (s: string) => s.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  return strip(input) !== strip(current);
 }
 
 async function handleApi(req: Request, url: URL): Promise<Response> {
@@ -345,6 +373,68 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const r = startUpdate();
     if (!r.ok) return err(409, r.error);
     return json({ ok: true });
+  }
+
+  // Bookmarks: quick links to other apps (often ones the agent deployed on
+  // other ports of this host), shown at the top of the dashboard. Creating or
+  // changing a URL fetches the page's title + favicon server-side.
+  if (p === '/bookmarks' && m === 'GET') {
+    return json({ bookmarks: listBookmarks() });
+  }
+
+  if (p === '/bookmarks' && m === 'POST') {
+    const body = await readBody<{ url?: string; title?: string }>(req);
+    const rawUrl = (body.url || '').trim();
+    if (!rawUrl) return err(400, 'URL required');
+    const meta = await fetchBookmarkMeta(rawUrl);
+    const explicitTitle = (body.title || '').trim();
+    const title = explicitTitle || meta.title || hostLabel(meta.url);
+    const bookmark = addBookmark({ url: meta.url, title, favicon: meta.favicon });
+    return json({ ok: true, bookmark });
+  }
+
+  const bmEdit = p.match(/^\/bookmarks\/(\d+)$/);
+  if (bmEdit && m === 'POST') {
+    const id = Number(bmEdit[1]);
+    const existing = getBookmark(id);
+    if (!existing) return err(404, 'No such bookmark');
+    const body = await readBody<{ url?: string; title?: string }>(req);
+    const rawUrl = (body.url ?? '').trim();
+    const explicitTitle = (body.title ?? '').trim();
+
+    if (rawUrl && normalizedUrlChanged(rawUrl, existing.url)) {
+      // URL changed — refetch metadata for the new target.
+      const meta = await fetchBookmarkMeta(rawUrl);
+      const bookmark = updateBookmark(id, {
+        url: meta.url,
+        title: explicitTitle || meta.title || hostLabel(meta.url),
+        favicon: meta.favicon,
+      });
+      return json({ ok: true, bookmark });
+    }
+
+    const bookmark = updateBookmark(id, explicitTitle ? { title: explicitTitle } : {});
+    return json({ ok: true, bookmark });
+  }
+
+  if (bmEdit && m === 'DELETE') {
+    if (!deleteBookmark(Number(bmEdit[1]))) return err(404, 'No such bookmark');
+    return json({ ok: true });
+  }
+
+  const bmRefresh = p.match(/^\/bookmarks\/(\d+)\/refresh$/);
+  if (bmRefresh && m === 'POST') {
+    const id = Number(bmRefresh[1]);
+    const existing = getBookmark(id);
+    if (!existing) return err(404, 'No such bookmark');
+    const meta = await fetchBookmarkMeta(existing.url);
+    // Only overwrite fields the fetch actually produced — a temporarily-down
+    // app shouldn't wipe the icon and title we already have.
+    const bookmark = updateBookmark(id, {
+      ...(meta.title ? { title: meta.title } : {}),
+      ...(meta.favicon ? { favicon: meta.favicon } : {}),
+    });
+    return json({ ok: true, bookmark, reachable: Boolean(meta.title || meta.favicon) });
   }
 
   if (p === '/reset-session' && m === 'POST') {

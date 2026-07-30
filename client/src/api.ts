@@ -100,6 +100,15 @@ export type AgentCheck = {
 /** @deprecated use AgentCheck */
 export type ClaudeCheck = AgentCheck;
 
+export type Bookmark = {
+  id: number;
+  url: string;
+  title: string;
+  favicon: string | null; // data: URI, fetched server-side
+  created_at: number;
+  updated_at: number;
+};
+
 export type MessageLogEntry = {
   id: number;
   created_at: number;
@@ -209,6 +218,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  bookmarks: () => request<{ bookmarks: Bookmark[] }>('/bookmarks'),
+  addBookmark: (body: { url: string; title?: string }) =>
+    request<{ ok: true; bookmark: Bookmark }>('/bookmarks', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateBookmark: (id: number, body: { url?: string; title?: string }) =>
+    request<{ ok: true; bookmark: Bookmark }>(`/bookmarks/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteBookmark: (id: number) =>
+    request<{ ok: true }>(`/bookmarks/${id}`, { method: 'DELETE' }),
+  refreshBookmark: (id: number) =>
+    request<{ ok: true; bookmark: Bookmark; reachable: boolean }>(
+      `/bookmarks/${id}/refresh`,
+      { method: 'POST' }
+    ),
   updateInfo: () => request<UpdateInfo>('/update/info'),
   updateCheck: () => request<UpdateCheck>('/update/check', { method: 'POST' }),
   updateRun: () => request<{ ok: true }>('/update/run', { method: 'POST' }),
