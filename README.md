@@ -9,7 +9,7 @@ A tiny relay that forwards Telegram messages to a coding agent — [Claude Code]
 - **Session continuity** — `claude --resume` / `codex exec resume` keep the conversation across messages
 - **Guided onboarding** UI: choose engine + detect its CLI, paste bot token, capture your chat ID
 - **Group topics** — link any number of group forum topics (or whole groups) from the dashboard; the bot answers there in addition to your private chat, each with its own conversation
-- **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [AGENTS.md](AGENTS.md))
+- **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
 
 > Codex is driven via `codex exec --json` (one process per message, resumed by thread id) — the same one-shot-plus-resume model the relay already uses for Claude. It runs with `--dangerously-bypass-approvals-and-sandbox` to match Claude's `bypassPermissions`, so it works unattended. Keep the host's `codex` current — older CLIs may reject newer default models.
 
@@ -305,7 +305,36 @@ The repo ships a deploy helper at [`bin/safe-update-relay`](bin/safe-update-rela
 setsid nohup ~/coding-agent-telegram-relay/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
 ```
 
-`setsid + nohup + &` keep it alive after `pm2 restart` kills its caller. See [`AGENTS.md`](AGENTS.md) for config (`RELAY_PROCESS_NAME`, `RELAY_REPO_DIR`) and one-time migration notes.
+`setsid + nohup + &` keep it alive after `pm2 restart` kills its caller.
+
+Config via env vars (defaults shown):
+
+- `RELAY_PROCESS_NAME` — pm2 process name (default `coding-agent-telegram-relay`)
+- `RELAY_REPO_DIR` — checkout to deploy (default: auto-derived from the script's
+  own location, i.e. the repo it lives in)
+
+<details>
+<summary>One-time VPS migration (from the old <code>claude-code-telegram</code> name)</summary>
+
+The repo, dir, and pm2 process were renamed. If your VPS still uses the old
+names, after the first pull either rename them or override via env:
+
+```bash
+# Option A — keep old names, just override the pm2 process name per run:
+RELAY_PROCESS_NAME=claude-code-telegram ~/claude-code-telegram/bin/safe-update-relay
+
+# Option B — migrate to the new names (then the defaults just work):
+pm2 delete claude-code-telegram
+mv ~/claude-code-telegram ~/coding-agent-telegram-relay
+cd ~/coding-agent-telegram-relay
+pm2 start "bun start" --name coding-agent-telegram-relay   # re-add with your usual env (PORT, etc.)
+pm2 save
+```
+
+The old external `~/bin/safe-update-relay` can be deleted once the in-repo
+script is in use.
+
+</details>
 
 ## Bot commands
 

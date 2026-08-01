@@ -147,133 +147,32 @@ starts at the same moment.
 When the user asks to watch/monitor/check something on a schedule, do **not**
 schedule an agent prompt by default — every `claude -p` firing is a billed
 agent turn. Instead, spend one turn (this one) writing a deterministic
-watcher script, and register it as a **job**: the relay runs it on a cron
-schedule and delivers its stdout to the user's Telegram for free.
+watcher script and registering it as a **job** (`bin/job add`): the relay
+runs it on a cron schedule and delivers its stdout to the user's Telegram for
+free. Escalate only as far up this ladder as the check actually requires:
+pure script (free, covers most requests) → script detects + `claude -p` only
+on trigger (bills a turn only when something happened) → scheduled agent
+check (last resort — warn the user it bills every firing).
 
-Pick the cheapest tier that works:
-
-1. **Pure script — free, the default.** The check is deterministic: price vs
-   threshold, HTTP status, "does this string appear on the page", disk usage,
-   RSS has a new entry. Covers most requests.
-2. **Script detects, agent reports — cheap.** Detection is deterministic but
-   the report needs judgment (e.g. "tell me when the changelog updates *and
-   summarize it*"). The script does the cheap check every firing; only when
-   it triggers does it shell out to
-   `claude -p '<self-contained prompt>' --permission-mode bypassPermissions`
-   and print the result. Costs a turn only when something actually happened.
-3. **Agent check — expensive, last resort.** The check itself needs judgment
-   ("does the issue tracker look on fire?"). The script is just the
-   `claude -p` call. Tell the user every firing bills an agent turn.
-
-Setting one up:
-
-```bash
-mkdir -p data/jobs/btc-alert          # 1. write data/jobs/btc-alert/run.ts
-bun data/jobs/btc-alert/run.ts        # 2. test it — run it directly first
-bin/job add --name btc-alert --schedule "*/15 * * * *" \
-  --desc "Alert when BTC drops below \$50k" data/jobs/btc-alert/run.ts   # 3. register
-```
-
-The job contract:
-
-- **stdout is the message.** Non-empty stdout (exit 0) is sent to the user's
-  Telegram as rich Markdown; empty stdout means "nothing to report" and sends
-  nothing. Never call `bin/notify` from a job script.
-- **Prefer Bun scripts** (`run.ts` — `fetch` + `JSON` beat `curl | jq`);
-  `.sh` runs under bash. The script runs with cwd = its own directory and a
-  10-minute timeout.
-- **State:** for "compared to last time" checks, read/write `$STATE_FILE`
-  (= `data/jobs/<name>/state.json`). `$JOB_NAME` and `$JOB_DIR` are also set.
-  Alert on *transitions* (crossed the threshold), not on every firing while
-  the condition holds — nobody wants the same warning every 15 minutes.
-- **Failures:** non-zero exit is recorded (visible in `/jobs` and the
-  dashboard); after 3 consecutive failures the relay warns the user once.
-- **Schedules are UTC** (5-field cron, `Bun.cron` semantics) — convert the
-  user's local time before registering (check the host TZ with `date +%z`),
-  and confirm the time back to the user in *their* local time.
-
-Example tier-1 watcher (edge-triggered threshold alert):
-
-```ts
-// data/jobs/btc-alert/run.ts — message only when BTC *crosses* below $50k
-const THRESHOLD = 50_000;
-const r = await fetch(
-  'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
-);
-const price: number = (await r.json()).bitcoin.usd;
-const state = await Bun.file(process.env.STATE_FILE!).json().catch(() => ({ below: false }));
-const below = price < THRESHOLD;
-if (below && !state.below) {
-  console.log(`🔻 **Bitcoin dropped below $${THRESHOLD.toLocaleString()}** — now $${price.toLocaleString()}`);
-}
-await Bun.write(process.env.STATE_FILE!, JSON.stringify({ below, price }));
-```
-
-Manage jobs with `bin/job list | run <name> | remove <name> | enable | disable`
-(`run` fires it once now and *does* deliver to Telegram). The user sees jobs
-via the `/jobs` Telegram command and the dashboard's Scheduled-jobs card. When
-the user asks to stop watching something, `bin/job remove <name>` and delete
-`data/jobs/<name>/` if nothing else uses it.
+**Before writing or registering a job, read `docs/scheduled-jobs.md`** — it
+has the full contract (stdout-is-the-message, `$STATE_FILE`, UTC schedules,
+failure semantics), a worked example, and the `bin/job` management commands.
 
 **Always close the loop in your reply** after creating a job: its name, the
 schedule in the user's own terms and timezone, exactly what triggers a
 message ("you'll only hear from it when…"), and that saying e.g. "remove the
 btc-alert job" stops it.
 
-Raw crontab (`crontab -l` / re-pipe to `crontab -`) remains an option **only**
-for jobs that must fire even while the relay is down — rare. Under cron,
-resolve absolute paths while your turn is alive (cron's PATH is nearly empty)
-and pipe output to `bin/notify` yourself.
+## Updating the relay itself
 
-## Setup
-
-Install the system dependencies (bun, Node, pm2, git, jq, sqlite3):
-
-```bash
-bin/doctor     # read-only: report what's present / missing
-bin/install    # install anything missing (Ubuntu/Debian, idempotent, uses sudo)
-```
-
-`bin/install` does **not** install or log into the agent CLIs — install + auth
-Claude Code (`claude`) and/or Codex (`codex login`) yourself; `bin/doctor`
-prints the links. See the README "VPS setup" section for the full flow.
-
-## Updating
-
-To pull, build, and restart the relay seamlessly (and get a Telegram ping when
-it's back), run:
+Never plain `pm2 restart` from a Telegram-relayed turn — it kills the process
+hosting your own run mid-reply. Update with the detached helper (pings the
+chat when done; a failed pull/build aborts before the restart):
 
 ```bash
 setsid nohup ~/coding-agent-telegram-relay/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
 ```
 
-The `setsid nohup … &` prefix is required so the script survives `pm2 restart`
-killing its caller. The script re-execs itself from a `/tmp` copy on startup, so
-the `git pull` can safely rewrite the in-repo copy mid-deploy. A failed
-pull/build aborts before the restart, leaving the running relay untouched.
-
-Config via env vars (defaults shown):
-
-- `RELAY_PROCESS_NAME` — pm2 process name (default `coding-agent-telegram-relay`)
-- `RELAY_REPO_DIR` — checkout to deploy (default: auto-derived from the script's
-  own location, i.e. the repo it lives in)
-
-### One-time VPS migration (from the old `claude-code-telegram` name)
-
-The repo, dir, and pm2 process were renamed. If your VPS still uses the old
-names, after the first pull either rename them or override via env:
-
-```bash
-# Option A — keep old names, just override the pm2 process name per run:
-RELAY_PROCESS_NAME=claude-code-telegram ~/claude-code-telegram/bin/safe-update-relay
-
-# Option B — migrate to the new names (then the defaults just work):
-pm2 delete claude-code-telegram
-mv ~/claude-code-telegram ~/coding-agent-telegram-relay
-cd ~/coding-agent-telegram-relay
-pm2 start "bun start" --name coding-agent-telegram-relay   # re-add with your usual env (PORT, etc.)
-pm2 save
-```
-
-The old external `~/bin/safe-update-relay` can be deleted once the in-repo
-script is in use.
+Env config (`RELAY_PROCESS_NAME`, `RELAY_REPO_DIR`), setup/install steps
+(`bin/doctor` / `bin/install`), and legacy-name migration notes are in the
+README ("VPS setup" and "Updating").
