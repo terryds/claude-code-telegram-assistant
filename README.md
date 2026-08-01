@@ -9,6 +9,7 @@ A tiny relay that forwards Telegram messages to a coding agent — [Claude Code]
 - **Session continuity** — `claude --resume` / `codex exec resume` keep the conversation across messages
 - **Guided onboarding** UI: choose engine + detect its CLI, paste bot token, capture your chat ID
 - **Group topics** — link any number of group forum topics (or whole groups) from the dashboard; the bot answers there in addition to your private chat, each with its own conversation
+- **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [AGENTS.md](AGENTS.md))
 
 > Codex is driven via `codex exec --json` (one process per message, resumed by thread id) — the same one-shot-plus-resume model the relay already uses for Claude. It runs with `--dangerously-bypass-approvals-and-sandbox` to match Claude's `bypassPermissions`, so it works unattended. Keep the host's `codex` current — older CLIs may reject newer default models.
 
@@ -312,6 +313,9 @@ setsid nohup ~/coding-agent-telegram-relay/bin/safe-update-relay >/dev/null 2>&1
 - `/stop` — interrupt the agent while it's working (kills the in-flight run)
 - `/new_session` — start a fresh conversation (forgets prior context)
 - `/engine` — show or switch the active engine (`/engine claude` / `/engine codex`)
+- `/skills` — list the agent skills available on this host
+- `/jobs` — list scheduled watcher jobs (recurring checks the agent set up)
+- `/update` — pull the latest relay version, rebuild, and restart
 
 ### Interrupting a run
 

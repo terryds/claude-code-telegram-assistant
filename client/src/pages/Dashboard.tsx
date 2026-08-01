@@ -8,6 +8,7 @@ import {
   type FeedEvent,
   type GroupCaptureMode,
   type GroupLink,
+  type Job,
   type Status,
   type UpdateInfo,
 } from '../api';
@@ -180,6 +181,13 @@ export function Dashboard({ status, onChange }: Props) {
         <BookmarksCard />
       </section>
 
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Scheduled jobs
+        </h2>
+        <JobsCard />
+      </section>
+
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <button
           onClick={toggleRelay}
@@ -270,6 +278,150 @@ export function Dashboard({ status, onChange }: Props) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function JobsCard() {
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [openOutput, setOpenOutput] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await api.jobs();
+      setJobs(r.jobs);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // The agent registers jobs from Telegram runs, and run states change on
+    // their own — keep the list fresh.
+    const id = window.setInterval(load, 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const withBusy = async (id: number, fn: () => Promise<unknown>) => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const fmt = (ts: number) =>
+    new Date(ts).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+  const statusDot = (j: Job) => {
+    if (!j.enabled) return 'bg-zinc-600';
+    if (j.running) return 'bg-blue-400 animate-pulse';
+    if (j.last_run_at === null) return 'bg-zinc-400';
+    return j.last_exit_code === 0 ? 'bg-emerald-400' : 'bg-red-400';
+  };
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-4 space-y-3">
+      {error && <p className="text-red-300 text-sm">{error}</p>}
+      {loaded && jobs.length === 0 && (
+        <p className="text-zinc-500 text-sm">
+          No scheduled jobs yet. Ask the agent over Telegram to watch something —
+          e.g. “check the bitcoin price every hour and tell me if it drops below
+          $50k” — and it will create one.
+        </p>
+      )}
+      {jobs.map((j) => (
+        <div
+          key={j.id}
+          className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2.5"
+        >
+          <div className="flex items-center gap-3">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(j)}`} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="font-medium text-sm">{j.name}</span>
+                <code className="text-xs text-zinc-400">{j.schedule} UTC</code>
+                {!j.enabled && (
+                  <span className="text-xs text-zinc-500">(paused)</span>
+                )}
+              </div>
+              {j.description && (
+                <p className="text-xs text-zinc-400 mt-0.5 truncate">{j.description}</p>
+              )}
+              <p className="text-xs text-zinc-500 mt-0.5">
+                {j.running
+                  ? 'running now…'
+                  : j.last_run_at
+                    ? `last run ${fmt(j.last_run_at)}${
+                        j.last_exit_code === 0 ? '' : ` — failed (exit ${j.last_exit_code})`
+                      }`
+                    : 'never ran yet'}
+                {j.enabled && j.next_run_at ? ` · next ${fmt(j.next_run_at)}` : ''}
+              </p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {j.last_output && (
+                <button
+                  onClick={() => setOpenOutput(openOutput === j.id ? null : j.id)}
+                  className="px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+                  title="Show last output"
+                >
+                  {openOutput === j.id ? 'Hide output' : 'Output'}
+                </button>
+              )}
+              <button
+                onClick={() => withBusy(j.id, () => api.runJob(j.id))}
+                disabled={busyId === j.id || j.running}
+                className="px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors disabled:opacity-50"
+                title="Run once now (delivers output to Telegram)"
+              >
+                Run now
+              </button>
+              <button
+                onClick={() =>
+                  withBusy(j.id, () => api.updateJob(j.id, { enabled: !j.enabled }))
+                }
+                disabled={busyId === j.id}
+                className="px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors disabled:opacity-50"
+              >
+                {j.enabled ? 'Pause' : 'Resume'}
+              </button>
+              <button
+                onClick={() => {
+                  if (!confirm(`Remove scheduled job "${j.name}"?`)) return;
+                  withBusy(j.id, () => api.deleteJob(j.id));
+                }}
+                disabled={busyId === j.id}
+                className="px-2 py-1 rounded text-xs text-zinc-500 hover:bg-red-950/40 hover:text-red-300 transition-colors disabled:opacity-50"
+                title="Remove job"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          {openOutput === j.id && j.last_output && (
+            <pre className="mt-2 max-h-48 overflow-auto rounded bg-zinc-950 border border-zinc-800 p-2 text-xs text-zinc-300 whitespace-pre-wrap">
+              {j.last_output}
+            </pre>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

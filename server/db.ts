@@ -76,6 +76,28 @@ db.run(`
   )
 `);
 
+// Scheduled jobs: watcher scripts the agent writes (usually under
+// data/jobs/<name>/) that the in-process scheduler (server/jobs.ts) runs on a
+// cron schedule. A run's non-empty stdout is sent to the linked Telegram chat;
+// empty stdout means "nothing to report". `schedule` is a 5-field cron
+// expression interpreted in UTC (Bun.cron semantics).
+db.run(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    schedule TEXT NOT NULL,
+    script_path TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_run_at INTEGER,
+    last_exit_code INTEGER,
+    last_output TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0
+  )
+`);
+
 export function getSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
     | { value: string }
@@ -140,6 +162,87 @@ export function updateBookmark(
 
 export function deleteBookmark(id: number): boolean {
   return db.prepare('DELETE FROM bookmarks WHERE id = ?').run(id).changes > 0;
+}
+
+export type Job = {
+  id: number;
+  name: string;
+  description: string;
+  schedule: string;
+  script_path: string;
+  enabled: number;
+  created_at: number;
+  updated_at: number;
+  last_run_at: number | null;
+  last_exit_code: number | null;
+  last_output: string | null;
+  consecutive_failures: number;
+};
+
+export function listJobs(): Job[] {
+  return db.prepare('SELECT * FROM jobs ORDER BY created_at ASC, id ASC').all() as Job[];
+}
+
+export function getJob(id: number): Job | null {
+  return (db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Job | undefined) ?? null;
+}
+
+export function getJobByName(name: string): Job | null {
+  return (db.prepare('SELECT * FROM jobs WHERE name = ?').get(name) as Job | undefined) ?? null;
+}
+
+export function addJob(entry: {
+  name: string;
+  description: string;
+  schedule: string;
+  script_path: string;
+}): Job {
+  const now = Date.now();
+  const r = db
+    .prepare(
+      `INSERT INTO jobs (name, description, schedule, script_path, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?)`
+    )
+    .run(entry.name, entry.description, entry.schedule, entry.script_path, now, now);
+  return getJob(Number(r.lastInsertRowid))!;
+}
+
+export function updateJob(
+  id: number,
+  patch: { description?: string; schedule?: string; script_path?: string; enabled?: boolean }
+): Job | null {
+  const existing = getJob(id);
+  if (!existing) return null;
+  db.prepare(
+    'UPDATE jobs SET description = ?, schedule = ?, script_path = ?, enabled = ?, updated_at = ? WHERE id = ?'
+  ).run(
+    patch.description ?? existing.description,
+    patch.schedule ?? existing.schedule,
+    patch.script_path ?? existing.script_path,
+    patch.enabled === undefined ? existing.enabled : patch.enabled ? 1 : 0,
+    Date.now(),
+    id
+  );
+  return getJob(id);
+}
+
+export function deleteJob(id: number): boolean {
+  return db.prepare('DELETE FROM jobs WHERE id = ?').run(id).changes > 0;
+}
+
+/** Persist one run's outcome and maintain the consecutive-failure counter. */
+export function recordJobRun(
+  id: number,
+  result: { exit_code: number; output: string }
+): Job | null {
+  const existing = getJob(id);
+  if (!existing) return null;
+  const failures = result.exit_code === 0 ? 0 : existing.consecutive_failures + 1;
+  db.prepare(
+    `UPDATE jobs SET last_run_at = ?, last_exit_code = ?, last_output = ?, consecutive_failures = ?
+     WHERE id = ?`
+  ).run(Date.now(), result.exit_code, result.output, failures, id);
+  return getJob(id);
 }
 
 export type MessageLogEntry = {

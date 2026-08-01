@@ -11,7 +11,21 @@ import {
   addBookmark,
   updateBookmark,
   deleteBookmark,
+  listJobs,
+  getJob,
+  getJobByName,
+  addJob,
+  updateJob,
+  deleteJob,
 } from './db.ts';
+import {
+  startJobScheduler,
+  syncJobs,
+  runJobNow,
+  nextRunAt,
+  validateSchedule,
+  isJobRunning,
+} from './jobs.ts';
 import { fetchBookmarkMeta } from './bookmark-meta.ts';
 import { getBotInfo, getRecentChats, getTelegramConfig } from './telegram.ts';
 import {
@@ -437,6 +451,92 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json({ ok: true, bookmark, reachable: Boolean(meta.title || meta.favicon) });
   }
 
+  // Scheduled jobs: watcher scripts registered by the agent (via bin/job) or
+  // the dashboard, run on a cron schedule by server/jobs.ts. Rows are the
+  // source of truth — every mutation ends with syncJobs() to reconcile the
+  // in-process Bun.cron registrations.
+  if (p === '/jobs' && m === 'GET') {
+    const jobs = listJobs().map((j) => ({
+      ...j,
+      next_run_at: j.enabled ? nextRunAt(j.schedule) : null,
+      running: isJobRunning(j.id),
+    }));
+    return json({ jobs });
+  }
+
+  if (p === '/jobs' && m === 'POST') {
+    const body = await readBody<{
+      name?: string;
+      description?: string;
+      schedule?: string;
+      script_path?: string;
+    }>(req);
+    const name = (body.name || '').trim();
+    const schedule = (body.schedule || '').trim();
+    const scriptPath = resolve((body.script_path || '').trim());
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)) {
+      return err(400, 'name must be a short slug (letters, digits, - and _)');
+    }
+    if (!schedule) return err(400, 'schedule (cron expression) required');
+    const bad = validateSchedule(schedule);
+    if (bad) return err(400, `invalid schedule: ${bad}`);
+    if (!body.script_path || !existsSync(scriptPath)) {
+      return err(400, `script not found: ${scriptPath}`);
+    }
+    // Upsert by name so re-registering a watcher updates it in place.
+    const existing = getJobByName(name);
+    const job = existing
+      ? updateJob(existing.id, {
+          // Empty description on a re-register keeps the existing one.
+          description: (body.description || '').trim() || existing.description,
+          schedule,
+          script_path: scriptPath,
+        })
+      : addJob({ name, description: (body.description || '').trim(), schedule, script_path: scriptPath });
+    syncJobs();
+    return json({ ok: true, job: { ...job!, next_run_at: nextRunAt(job!.schedule) } });
+  }
+
+  const jobEdit = p.match(/^\/jobs\/(\d+)$/);
+  if (jobEdit && m === 'POST') {
+    const id = Number(jobEdit[1]);
+    if (!getJob(id)) return err(404, 'No such job');
+    const body = await readBody<{
+      description?: string;
+      schedule?: string;
+      script_path?: string;
+      enabled?: boolean;
+    }>(req);
+    if (body.schedule !== undefined) {
+      const bad = validateSchedule(body.schedule.trim());
+      if (bad) return err(400, `invalid schedule: ${bad}`);
+    }
+    if (body.script_path !== undefined && !existsSync(resolve(body.script_path))) {
+      return err(400, `script not found: ${resolve(body.script_path)}`);
+    }
+    const job = updateJob(id, {
+      ...(body.description !== undefined ? { description: body.description } : {}),
+      ...(body.schedule !== undefined ? { schedule: body.schedule.trim() } : {}),
+      ...(body.script_path !== undefined ? { script_path: resolve(body.script_path) } : {}),
+      ...(body.enabled !== undefined ? { enabled: Boolean(body.enabled) } : {}),
+    });
+    syncJobs();
+    return json({ ok: true, job });
+  }
+
+  if (jobEdit && m === 'DELETE') {
+    if (!deleteJob(Number(jobEdit[1]))) return err(404, 'No such job');
+    syncJobs();
+    return json({ ok: true });
+  }
+
+  const jobRun = p.match(/^\/jobs\/(\d+)\/run$/);
+  if (jobRun && m === 'POST') {
+    const r = await runJobNow(Number(jobRun[1]));
+    if ('error' in r) return err(409, r.error);
+    return json({ ok: true, ...r });
+  }
+
   if (p === '/reset-session' && m === 'POST') {
     stopAllRuns();
     clearAllSessions();
@@ -517,6 +617,7 @@ function serveStatic(url: URL): Response {
 }
 
 startListener();
+startJobScheduler();
 
 // Refresh the Telegram command menu on boot so deploys pick up command changes.
 // (Otherwise setMyCommands only runs when the relay is toggled on, leaving the

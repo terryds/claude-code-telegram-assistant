@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# job add --name <name> --schedule "<cron>" [--desc <text>] <script-path>
+# job list
+# job run <name-or-id>
+# job remove <name-or-id>
+# job enable <name-or-id> | disable <name-or-id>
+#
+# Manage scheduled watcher jobs — scripts (usually under data/jobs/<name>/)
+# that the relay runs on a cron schedule, sending any non-empty stdout to the
+# linked Telegram chat. Empty stdout = nothing to report = no message.
+#
+# The schedule is a standard 5-field cron expression interpreted in **UTC**.
+# `add` is idempotent by name: re-adding updates the schedule/script in place.
+# `run` fires the job once right now (and DOES deliver its output to Telegram
+# — to test a script silently, execute it directly instead).
+#
+# Prefers the relay's HTTP API; if the relay isn't running, falls back to
+# writing the jobs table in data/app.db directly (the scheduler picks the row
+# up when the relay next boots).
+#
+# Env: RELAY_DB overrides the DB path; RELAY_PORT pins the API port
+# (otherwise $PORT, 8000, 3000 are probed).
+
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
+
+MODE="${1:-}"
+[ $# -gt 0 ] && shift
+
+NAME=""
+SCHEDULE=""
+DESC=""
+SCRIPT=""
+TARGET=""
+
+case "$MODE" in
+  add)
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name)     NAME="${2:?--name needs a value}"; shift 2 ;;
+        --schedule) SCHEDULE="${2:?--schedule needs a value}"; shift 2 ;;
+        --desc)     DESC="${2:?--desc needs a value}"; shift 2 ;;
+        *)          SCRIPT="$1"; shift ;;
+      esac
+    done
+    ;;
+  list) ;;
+  run|remove|enable|disable)
+    TARGET="${1:?$MODE needs a job name or id}"
+    ;;
+  -h|--help|help|"")
+    sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "job: unknown command '$MODE' (try: add, list, run, remove, enable, disable)" >&2
+    exit 1
+    ;;
+esac
+
+# Find the relay's API base URL by probing likely ports for /api/status.
+api_base() {
+  local candidates=()
+  [ -n "${RELAY_PORT:-}" ] && candidates+=("$RELAY_PORT")
+  [ -n "${PORT:-}" ] && candidates+=("$PORT")
+  candidates+=(8000 3000)
+  local seen="" port
+  for port in "${candidates[@]}"; do
+    case " $seen " in *" $port "*) continue ;; esac
+    seen="$seen $port"
+    if curl -s --max-time 2 "http://127.0.0.1:${port}/api/status" \
+        | jq -e 'has("relay_enabled")' >/dev/null 2>&1; then
+      echo "http://127.0.0.1:${port}/api"
+      return 0
+    fi
+  done
+  return 1
+}
+
+BASE="$(api_base || true)"
+
+# Resolve a name-or-id argument to a job id (API mode).
+api_job_id() {
+  local x="$1"
+  if [[ "$x" =~ ^[0-9]+$ ]]; then echo "$x"; return 0; fi
+  curl -s --max-time 10 "$BASE/jobs" \
+    | jq -r --arg n "$x" '.jobs[] | select(.name == $n) | .id' | head -1
+}
+
+Q() { printf %s "$1" | sed "s/'/''/g"; }
+
+case "$MODE" in
+  list)
+    if [ -n "$BASE" ]; then
+      curl -s --max-time 10 "$BASE/jobs" | jq -r '
+        .jobs[] |
+        "\(.id)\t\(.name)\t\(if .enabled == 1 then "on" else "OFF" end)\t\(.schedule)\t" +
+        (if .last_run_at then
+           (if .last_exit_code == 0 then "ok" else "exit \(.last_exit_code)" end)
+         else "never ran" end) +
+        "\t\(.description)"'
+    else
+      sqlite3 -separator $'\t' "$DB" \
+        "SELECT id, name, CASE enabled WHEN 1 THEN 'on' ELSE 'OFF' END, schedule,
+                COALESCE('exit ' || last_exit_code, 'never ran'), description
+         FROM jobs ORDER BY id" 2>/dev/null
+    fi
+    ;;
+
+  add)
+    if [ -z "$NAME" ] || [ -z "$SCHEDULE" ] || [ -z "$SCRIPT" ]; then
+      echo "job: usage: job add --name <name> --schedule \"<cron>\" [--desc <text>] <script-path>" >&2
+      exit 1
+    fi
+    if [ ! -f "$SCRIPT" ]; then
+      echo "job: script not found: $SCRIPT" >&2
+      exit 1
+    fi
+    SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")"
+    if [ -n "$BASE" ]; then
+      BODY="$(jq -n --arg n "$NAME" --arg s "$SCHEDULE" --arg d "$DESC" --arg p "$SCRIPT" \
+        '{name: $n, schedule: $s, description: $d, script_path: $p}')"
+      RESP="$(curl -s --max-time 15 -X POST "$BASE/jobs" \
+        -H 'Content-Type: application/json' -d "$BODY")"
+      if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+        NEXT="$(echo "$RESP" | jq -r '.job.next_run_at // empty')"
+        [ -n "$NEXT" ] && NEXT=" — next run $(date -r "$((NEXT / 1000))" 2>/dev/null || date -d "@$((NEXT / 1000))" 2>/dev/null)"
+        echo "job registered: $NAME ($SCHEDULE, UTC)$NEXT"
+      else
+        echo "job: add failed: $RESP" >&2
+        exit 1
+      fi
+    else
+      NOW="$(date +%s)000"
+      sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL DEFAULT '',
+          schedule TEXT NOT NULL,
+          script_path TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_run_at INTEGER,
+          last_exit_code INTEGER,
+          last_output TEXT,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO jobs (name, description, schedule, script_path, enabled, created_at, updated_at)
+        VALUES ('$(Q "$NAME")', '$(Q "$DESC")', '$(Q "$SCHEDULE")', '$(Q "$SCRIPT")', 1, $NOW, $NOW)
+        ON CONFLICT(name) DO UPDATE SET
+          schedule = excluded.schedule,
+          script_path = excluded.script_path,
+          description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
+          updated_at = excluded.updated_at;"
+      echo "job registered (direct DB — relay will schedule it on next boot): $NAME ($SCHEDULE, UTC)"
+    fi
+    ;;
+
+  run)
+    if [ -z "$BASE" ]; then
+      echo "job: the relay isn't running — execute the script directly to test it" >&2
+      exit 1
+    fi
+    ID="$(api_job_id "$TARGET")"
+    if [ -z "$ID" ]; then echo "job: no job matching '$TARGET'" >&2; exit 1; fi
+    RESP="$(curl -s --max-time 630 -X POST "$BASE/jobs/$ID/run")"
+    if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+      EXIT="$(echo "$RESP" | jq -r '.exit_code')"
+      SENT="$(echo "$RESP" | jq -r '.sent')"
+      OUT="$(echo "$RESP" | jq -r '.output')"
+      echo "exit $EXIT, message sent to Telegram: $SENT"
+      if [ -n "$OUT" ]; then printf '%s\n' "--- output ---" "$OUT"; fi
+    else
+      echo "job: run failed: $RESP" >&2
+      exit 1
+    fi
+    ;;
+
+  remove)
+    if [ -n "$BASE" ]; then
+      ID="$(api_job_id "$TARGET")"
+      if [ -z "$ID" ]; then echo "job: no job matching '$TARGET'" >&2; exit 1; fi
+      curl -s --max-time 10 -X DELETE "$BASE/jobs/$ID" | jq -e '.ok == true' >/dev/null \
+        && echo "removed job $TARGET" \
+        || { echo "job: remove failed" >&2; exit 1; }
+    else
+      if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+        sqlite3 "$DB" "DELETE FROM jobs WHERE id = $TARGET"
+      else
+        sqlite3 "$DB" "DELETE FROM jobs WHERE name = '$(Q "$TARGET")'"
+      fi
+      echo "removed (direct DB)"
+    fi
+    ;;
+
+  enable|disable)
+    EN="$([ "$MODE" = enable ] && echo true || echo false)"
+    if [ -n "$BASE" ]; then
+      ID="$(api_job_id "$TARGET")"
+      if [ -z "$ID" ]; then echo "job: no job matching '$TARGET'" >&2; exit 1; fi
+      curl -s --max-time 10 -X POST "$BASE/jobs/$ID" \
+        -H 'Content-Type: application/json' -d "{\"enabled\": $EN}" \
+        | jq -e '.ok == true' >/dev/null \
+        && echo "${MODE}d job $TARGET" \
+        || { echo "job: $MODE failed" >&2; exit 1; }
+    else
+      V="$([ "$MODE" = enable ] && echo 1 || echo 0)"
+      if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+        sqlite3 "$DB" "UPDATE jobs SET enabled = $V WHERE id = $TARGET"
+      else
+        sqlite3 "$DB" "UPDATE jobs SET enabled = $V WHERE name = '$(Q "$TARGET")'"
+      fi
+      echo "${MODE}d (direct DB — takes effect when the relay next boots)"
+    fi
+    ;;
+esac

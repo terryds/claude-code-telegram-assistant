@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
-import { getSetting, setSetting, deleteSetting, db, logMessage, logStep } from './db.ts';
+import { getSetting, setSetting, deleteSetting, db, logMessage, logStep, listJobs } from './db.ts';
 import {
   getTelegramConfig,
   getUpdatesRaw,
@@ -25,6 +25,8 @@ import {
 import { currentEngine } from './engines.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
 import { startUpdate } from './updater.ts';
+import { listSkills } from './skills.ts';
+import { nextRunAt, isJobRunning } from './jobs.ts';
 
 const INCOMING_DIR = resolve('./data/incoming');
 mkdirSync(INCOMING_DIR, { recursive: true });
@@ -690,6 +692,95 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     return;
   }
 
+  if (text === '/skills' || text.startsWith('/skills ')) {
+    const engineId = getEngineId();
+    const skills = listSkills(engineId);
+    if (skills.length === 0) {
+      await sendTelegram(
+        `📚 No skills found for <b>${escapeHtml(engineLabel)}</b> on this host.`,
+        { target }
+      );
+      return;
+    }
+    const SOURCE_ICONS: Record<string, string> = {
+      project: '📁',
+      personal: '👤',
+      plugin: '🧩',
+      prompt: '📝',
+    };
+    const lines = [
+      `📚 <b>${escapeHtml(engineLabel)} skills</b> (${skills.length}):`,
+      '',
+      ...skills.map((s) => {
+        const icon = SOURCE_ICONS[s.source] ?? '•';
+        const desc = s.description
+          ? ` — ${escapeHtml(truncate(s.description, 120))}`
+          : '';
+        return `${icon} <b>${escapeHtml(s.name)}</b>${desc}`;
+      }),
+      '',
+      '<i>Ask for one by name (e.g. "use the … skill") or just describe the task — the agent picks skills up automatically.</i>',
+    ];
+    // sendTelegram (HTML) doesn't chunk, and a long skill list can exceed
+    // Telegram's 4096-char limit — batch on line boundaries.
+    let batch: string[] = [];
+    let batchLen = 0;
+    for (const line of lines) {
+      if (batchLen + line.length + 1 > MAX_TG && batch.length > 0) {
+        await sendTelegram(batch.join('\n'), { target });
+        batch = [];
+        batchLen = 0;
+      }
+      batch.push(line);
+      batchLen += line.length + 1;
+    }
+    if (batch.length > 0) await sendTelegram(batch.join('\n'), { target });
+    return;
+  }
+
+  if (text === '/jobs' || text.startsWith('/jobs ')) {
+    const jobs = listJobs();
+    if (jobs.length === 0) {
+      await sendTelegram(
+        '⏰ No scheduled jobs yet.\n\nAsk me to watch something — e.g. "check the bitcoin price every hour and tell me if it drops below $50k" — and I\'ll set one up.',
+        { target }
+      );
+      return;
+    }
+    const fmt = (ts: number) =>
+      new Date(ts).toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    const entries = [
+      `⏰ <b>Scheduled jobs</b> (${jobs.length}):`,
+      ...jobs.map((j) => {
+        const status = !j.enabled
+          ? '⏸ disabled'
+          : isJobRunning(j.id)
+            ? '⏳ running now'
+            : j.last_run_at
+              ? j.last_exit_code === 0
+                ? `✅ last run ${fmt(j.last_run_at)}`
+                : `❌ failed ${fmt(j.last_run_at)} (exit ${j.last_exit_code})`
+              : 'never ran yet';
+        const next = j.enabled ? nextRunAt(j.schedule) : null;
+        return [
+          `<b>${escapeHtml(j.name)}</b> — <code>${escapeHtml(j.schedule)}</code>`,
+          j.description ? `  ${escapeHtml(truncate(j.description, 150))}` : null,
+          `  ${status}${next ? ` · next ${fmt(next)}` : ''}`,
+        ]
+          .filter((l): l is string => l !== null)
+          .join('\n');
+      }),
+      '<i>Manage them by asking — e.g. "pause the btc-alert job" or "stop watching bitcoin".</i>',
+    ];
+    await sendTelegram(entries.join('\n\n'), { target });
+    return;
+  }
+
   if (text === '/update' || text.startsWith('/update ')) {
     const r = startUpdate();
     if (!r.ok) {
@@ -717,6 +808,8 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         '  /stop — interrupt the agent while it\'s working',
         '  /new_session — start a fresh conversation',
         '  /engine — show or switch the active engine (Claude Code / Codex)',
+        '  /skills — list the agent skills available on this host',
+        '  /jobs — list scheduled watcher jobs (recurring checks)',
         '  /update — pull the latest relay version and restart',
         '  /help — show this message',
       ].join('\n'),
@@ -952,6 +1045,10 @@ async function buildAudioPrompt(
     : `${ref}\n\nNo caption was provided — figure out what the user wants, or wait for follow-up instructions.`;
 }
 
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -961,6 +1058,8 @@ export async function applyBotCommands(): Promise<void> {
     { command: 'stop', description: 'Interrupt the agent while it is working' },
     { command: 'new_session', description: 'Start a new conversation' },
     { command: 'engine', description: 'Show or switch the active engine' },
+    { command: 'skills', description: 'List available agent skills' },
+    { command: 'jobs', description: 'List scheduled watcher jobs' },
     { command: 'update', description: 'Update the relay and restart' },
     { command: 'help', description: 'Show usage' },
   ]);

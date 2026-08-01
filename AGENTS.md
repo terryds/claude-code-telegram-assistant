@@ -142,29 +142,88 @@ Prefer a fresh session with a self-contained prompt over `--resume`: resuming
 the relay's live session from a background job can race with a run the relay
 starts at the same moment.
 
-### Recurring checks (cron)
+### Recurring checks ("watch X", "alert me when…"): write a script, register a job
 
-For "check X every N hours", install a crontab entry (survives reboots; the
-relay doesn't need to be running). Rules that matter:
+When the user asks to watch/monitor/check something on a schedule, do **not**
+schedule an agent prompt by default — every `claude -p` firing is a billed
+agent turn. Instead, spend one turn (this one) writing a deterministic
+watcher script, and register it as a **job**: the relay runs it on a cron
+schedule and delivers its stdout to the user's Telegram for free.
 
-- **cron's PATH is nearly empty** (`/usr/bin:/bin`) — resolve absolute paths
-  while your turn is alive (`command -v claude`, `$PWD/bin/notify`) and use
-  those in the entry. A bare `claude` silently does nothing under cron.
-- **Every firing is a fresh session with no memory** — write the prompt to be
-  self-contained ("alert only if >80%", not "check it again"). If a check
-  needs to compare against last time, have the prompt read/write a state file
-  (e.g. under `/tmp` or the repo's `data/`).
-- **Every firing is a billed agent turn** — keep scheduled prompts small, and
-  prefer "message only when something's wrong" prompts so quiet runs stay
-  cheap and don't spam the chat (`bin/notify` skips empty input).
+Pick the cheapest tier that works:
+
+1. **Pure script — free, the default.** The check is deterministic: price vs
+   threshold, HTTP status, "does this string appear on the page", disk usage,
+   RSS has a new entry. Covers most requests.
+2. **Script detects, agent reports — cheap.** Detection is deterministic but
+   the report needs judgment (e.g. "tell me when the changelog updates *and
+   summarize it*"). The script does the cheap check every firing; only when
+   it triggers does it shell out to
+   `claude -p '<self-contained prompt>' --permission-mode bypassPermissions`
+   and print the result. Costs a turn only when something actually happened.
+3. **Agent check — expensive, last resort.** The check itself needs judgment
+   ("does the issue tracker look on fire?"). The script is just the
+   `claude -p` call. Tell the user every firing bills an agent turn.
+
+Setting one up:
 
 ```bash
-CLAUDE="$(command -v claude)"; N="$PWD/bin/notify"
-( crontab -l 2>/dev/null; echo "0 */6 * * * cd $PWD && $CLAUDE -p 'Check disk usage on this host; reply ONLY if a filesystem is over 80% full, else output nothing.' --permission-mode bypassPermissions 2>&1 | $N" ) | crontab -
+mkdir -p data/jobs/btc-alert          # 1. write data/jobs/btc-alert/run.ts
+bun data/jobs/btc-alert/run.ts        # 2. test it — run it directly first
+bin/job add --name btc-alert --schedule "*/15 * * * *" \
+  --desc "Alert when BTC drops below \$50k" data/jobs/btc-alert/run.ts   # 3. register
 ```
 
-List entries with `crontab -l`; remove one by filtering it out and re-piping
-to `crontab -`. When the user asks to stop a recurring check, do that cleanup.
+The job contract:
+
+- **stdout is the message.** Non-empty stdout (exit 0) is sent to the user's
+  Telegram as rich Markdown; empty stdout means "nothing to report" and sends
+  nothing. Never call `bin/notify` from a job script.
+- **Prefer Bun scripts** (`run.ts` — `fetch` + `JSON` beat `curl | jq`);
+  `.sh` runs under bash. The script runs with cwd = its own directory and a
+  10-minute timeout.
+- **State:** for "compared to last time" checks, read/write `$STATE_FILE`
+  (= `data/jobs/<name>/state.json`). `$JOB_NAME` and `$JOB_DIR` are also set.
+  Alert on *transitions* (crossed the threshold), not on every firing while
+  the condition holds — nobody wants the same warning every 15 minutes.
+- **Failures:** non-zero exit is recorded (visible in `/jobs` and the
+  dashboard); after 3 consecutive failures the relay warns the user once.
+- **Schedules are UTC** (5-field cron, `Bun.cron` semantics) — convert the
+  user's local time before registering (check the host TZ with `date +%z`),
+  and confirm the time back to the user in *their* local time.
+
+Example tier-1 watcher (edge-triggered threshold alert):
+
+```ts
+// data/jobs/btc-alert/run.ts — message only when BTC *crosses* below $50k
+const THRESHOLD = 50_000;
+const r = await fetch(
+  'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
+);
+const price: number = (await r.json()).bitcoin.usd;
+const state = await Bun.file(process.env.STATE_FILE!).json().catch(() => ({ below: false }));
+const below = price < THRESHOLD;
+if (below && !state.below) {
+  console.log(`🔻 **Bitcoin dropped below $${THRESHOLD.toLocaleString()}** — now $${price.toLocaleString()}`);
+}
+await Bun.write(process.env.STATE_FILE!, JSON.stringify({ below, price }));
+```
+
+Manage jobs with `bin/job list | run <name> | remove <name> | enable | disable`
+(`run` fires it once now and *does* deliver to Telegram). The user sees jobs
+via the `/jobs` Telegram command and the dashboard's Scheduled-jobs card. When
+the user asks to stop watching something, `bin/job remove <name>` and delete
+`data/jobs/<name>/` if nothing else uses it.
+
+**Always close the loop in your reply** after creating a job: its name, the
+schedule in the user's own terms and timezone, exactly what triggers a
+message ("you'll only hear from it when…"), and that saying e.g. "remove the
+btc-alert job" stops it.
+
+Raw crontab (`crontab -l` / re-pipe to `crontab -`) remains an option **only**
+for jobs that must fire even while the relay is down — rare. Under cron,
+resolve absolute paths while your turn is alive (cron's PATH is nearly empty)
+and pipe output to `bin/notify` yourself.
 
 ## Setup
 

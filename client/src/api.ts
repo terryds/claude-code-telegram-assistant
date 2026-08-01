@@ -109,6 +109,23 @@ export type Bookmark = {
   updated_at: number;
 };
 
+export type Job = {
+  id: number;
+  name: string;
+  description: string;
+  schedule: string; // 5-field cron expression, UTC
+  script_path: string;
+  enabled: number;
+  created_at: number;
+  updated_at: number;
+  last_run_at: number | null;
+  last_exit_code: number | null;
+  last_output: string | null;
+  consecutive_failures: number;
+  next_run_at: number | null;
+  running: boolean;
+};
+
 export type MessageLogEntry = {
   id: number;
   created_at: number;
@@ -234,6 +251,22 @@ export const api = {
   refreshBookmark: (id: number) =>
     request<{ ok: true; bookmark: Bookmark; reachable: boolean }>(
       `/bookmarks/${id}/refresh`,
+      { method: 'POST' }
+    ),
+  jobs: () => request<{ jobs: Job[] }>('/jobs'),
+  updateJob: (
+    id: number,
+    body: { description?: string; schedule?: string; enabled?: boolean }
+  ) =>
+    request<{ ok: true; job: Job }>(`/jobs/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteJob: (id: number) =>
+    request<{ ok: true }>(`/jobs/${id}`, { method: 'DELETE' }),
+  runJob: (id: number) =>
+    request<{ ok: true; exit_code: number; output: string; sent: boolean }>(
+      `/jobs/${id}/run`,
       { method: 'POST' }
     ),
   updateInfo: () => request<UpdateInfo>('/update/info'),
