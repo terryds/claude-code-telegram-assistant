@@ -43,6 +43,7 @@ import {
   clearAuthProbe,
 } from './engine.ts';
 import { getEngine } from './engines.ts';
+import { getPersona, setPersona, isCustomPersona, DEFAULT_PERSONA } from './persona.ts';
 import {
   startClaudeLogin,
   submitClaudeLoginCode,
@@ -270,6 +271,24 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     clearAllSessions();
     setEngineId(id);
     return json({ ok: true, engine: id });
+  }
+
+  if (p === '/persona' && m === 'GET') {
+    return json({
+      persona: getPersona(),
+      custom: isCustomPersona(),
+      default_persona: DEFAULT_PERSONA,
+    });
+  }
+
+  if (p === '/persona' && m === 'POST') {
+    const body = await readBody<{ persona?: string }>(req);
+    // Persona is injected at session start, so stop in-flight runs and clear
+    // sessions — the next message picks it up in a fresh conversation.
+    stopAllRuns();
+    clearAllSessions();
+    setPersona(body.persona ?? '');
+    return json({ ok: true, persona: getPersona(), custom: isCustomPersona() });
   }
 
   if (p === '/onboarding/save-token' && m === 'POST') {

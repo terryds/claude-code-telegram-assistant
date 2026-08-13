@@ -23,6 +23,7 @@ import {
   type EngineStep,
 } from './engine.ts';
 import { currentEngine } from './engines.ts';
+import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
 import { startUpdate } from './updater.ts';
 import { listSkills } from './skills.ts';
@@ -367,7 +368,14 @@ function startEngineRun(
 
     let result: EngineResult;
     try {
-      result = await engine.run(prompt, sessionId, abort.signal, onStep);
+      // Fresh conversations get the persona prepended to their first prompt;
+      // resumed sessions already carry it in their transcript.
+      result = await engine.run(
+        sessionId ? prompt : withPersona(prompt),
+        sessionId,
+        abort.signal,
+        onStep
+      );
 
       // The saved session id no longer resolves (e.g. the working dir was
       // renamed, or ~/.claude was cleaned). Drop it and transparently restart
@@ -382,7 +390,7 @@ function startEngineRun(
           logStep(step, null);
           await sendStep(step, target);
         };
-        result = await engine.run(prompt, null, abort.signal, onFreshStep);
+        result = await engine.run(withPersona(prompt), null, abort.signal, onFreshStep);
       }
     } finally {
       clearInterval(typing);
@@ -692,6 +700,45 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     return;
   }
 
+  if (text === '/persona' || text.startsWith('/persona ')) {
+    const arg = text.slice('/persona'.length).trim();
+    if (!arg) {
+      await sendTelegram(
+        [
+          `🎭 <b>Current persona</b> (${isCustomPersona() ? 'customized' : 'default'}):`,
+          '',
+          `<blockquote>${escapeHtml(truncate(getPersona(), 3000))}</blockquote>`,
+          '',
+          'Change with:',
+          '  /persona &lt;text&gt; — set a custom persona',
+          '  /persona reset — restore the default',
+          '',
+          '<i>Changing it starts fresh conversations. You can also edit it on the dashboard.</i>',
+        ].join('\n'),
+        { target }
+      );
+      return;
+    }
+    // Persona is injected at session start, so a change only takes effect on
+    // fresh conversations — stop runs and clear sessions like /engine does.
+    stopAllRuns();
+    clearAllSessions();
+    if (arg.toLowerCase() === 'reset') {
+      resetPersona();
+      await sendTelegram(
+        '✅ <b>Persona reset to the default personal assistant.</b>\nThe next message will begin a fresh conversation.',
+        { target }
+      );
+    } else {
+      setPersona(arg);
+      await sendTelegram(
+        '✅ <b>Persona updated.</b>\nThe next message will begin a fresh conversation with it.',
+        { target }
+      );
+    }
+    return;
+  }
+
   if (text === '/skills' || text.startsWith('/skills ')) {
     const engineId = getEngineId();
     const skills = listSkills(engineId);
@@ -808,6 +855,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         '  /stop — interrupt the agent while it\'s working',
         '  /new_session — start a fresh conversation',
         '  /engine — show or switch the active engine (Claude Code / Codex)',
+        '  /persona — show or customize the assistant\'s persona',
         '  /skills — list the agent skills available on this host',
         '  /jobs — list scheduled watcher jobs (recurring checks)',
         '  /update — pull the latest relay version and restart',
@@ -1058,6 +1106,7 @@ export async function applyBotCommands(): Promise<void> {
     { command: 'stop', description: 'Interrupt the agent while it is working' },
     { command: 'new_session', description: 'Start a new conversation' },
     { command: 'engine', description: 'Show or switch the active engine' },
+    { command: 'persona', description: 'Show or customize the assistant persona' },
     { command: 'skills', description: 'List available agent skills' },
     { command: 'jobs', description: 'List scheduled watcher jobs' },
     { command: 'update', description: 'Update the relay and restart' },

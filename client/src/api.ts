@@ -34,6 +34,12 @@ export type EngineAuth = {
   checked_at?: number;
 };
 
+export type PersonaInfo = {
+  persona: string;
+  custom: boolean;
+  default_persona: string;
+};
+
 export type GroupCaptureMode = 'topic' | 'group';
 
 export type GroupLink = {
@@ -199,6 +205,12 @@ export const api = {
     request<{ ok: true; engine: EngineId }>('/engine', {
       method: 'POST',
       body: JSON.stringify({ engine }),
+    }),
+  persona: () => request<PersonaInfo>('/persona'),
+  setPersona: (persona: string) =>
+    request<{ ok: true; persona: string; custom: boolean }>('/persona', {
+      method: 'POST',
+      body: JSON.stringify({ persona }),
     }),
   saveToken: (token: string) =>
     request<{ ok: true; bot: BotInfo }>('/onboarding/save-token', {

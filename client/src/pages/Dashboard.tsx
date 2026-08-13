@@ -234,6 +234,13 @@ export function Dashboard({ status, onChange }: Props) {
 
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Persona
+        </h2>
+        <PersonaCard />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Group topics
         </h2>
         <GroupTopicCard
@@ -278,6 +285,120 @@ export function Dashboard({ status, onChange }: Props) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function PersonaCard() {
+  const [loaded, setLoaded] = useState(false);
+  const [text, setText] = useState('');
+  const [saved, setSaved] = useState('');
+  const [custom, setCustom] = useState(false);
+  const [defaultPersona, setDefaultPersona] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .persona()
+      .then((r) => {
+        setText(r.persona);
+        setSaved(r.persona);
+        setCustom(r.custom);
+        setDefaultPersona(r.default_persona);
+        setLoaded(true);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const dirty = text !== saved;
+
+  const save = async (value: string) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await api.setPersona(value);
+      setText(r.persona);
+      setSaved(r.persona);
+      setCustom(r.custom);
+      setNotice('Saved — the next Telegram message starts a fresh conversation with it.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm text-zinc-500">
+        {error ?? 'Loading…'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-3 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-zinc-400 text-xs">
+          Who the assistant is to you on Telegram. Injected at the start of every
+          conversation — also editable via <code className="text-zinc-300">/persona</code> in chat.
+        </p>
+        <span
+          className={[
+            'shrink-0 px-2 py-0.5 rounded-full text-xs font-medium border',
+            custom
+              ? 'bg-blue-950/40 text-blue-300 border-blue-800'
+              : 'bg-zinc-800 text-zinc-400 border-zinc-700',
+          ].join(' ')}
+        >
+          {custom ? 'Customized' : 'Default'}
+        </span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setNotice(null);
+        }}
+        rows={7}
+        spellCheck={false}
+        className="w-full rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2.5 font-mono text-xs leading-relaxed resize-y focus:outline-none focus:border-zinc-600"
+      />
+      {error && <p className="text-red-300 text-xs">{error}</p>}
+      {notice && <p className="text-emerald-300 text-xs">{notice}</p>}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => save(text)}
+          disabled={busy || !dirty || !text.trim()}
+          className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
+        >
+          Save persona
+        </button>
+        {custom && (
+          <button
+            onClick={() => save('')}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-md border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-xs transition-colors disabled:opacity-50"
+          >
+            Reset to default
+          </button>
+        )}
+        {!custom && dirty && (
+          <button
+            onClick={() => setText(defaultPersona)}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-md border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-xs transition-colors disabled:opacity-50"
+          >
+            Discard changes
+          </button>
+        )}
+        <span className="text-zinc-500 text-xs">
+          Saving stops in-flight runs and starts fresh conversations.
+        </span>
+      </div>
     </div>
   );
 }
