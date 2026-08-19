@@ -641,8 +641,9 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
   const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
   const video = extractVideo(msg);
   const audio = extractAudio(msg);
+  const document = video || audio ? null : extractDocument(msg);
 
-  if (!text && !hasPhoto && !video && !audio) return;
+  if (!text && !hasPhoto && !video && !audio && !document) return;
 
   const engineLabel = ENGINE_LABELS[getEngineId()];
 
@@ -850,6 +851,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         '',
         'You can also send photos (with or without a caption) — they get saved to disk and the file path is passed to the agent.',
         'Videos, video notes, voice notes and audio files work the same way — they get saved to disk and the file path is passed to the agent.',
+        'Documents too (.csv, .md, .txt, .pdf, or any other file) — sent as a file, they get saved to disk and the agent reads them from the path.',
         '',
         'Commands:',
         '  /stop — interrupt the agent while it\'s working',
@@ -871,6 +873,8 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     prompt = await buildVideoPrompt(msg, video, caption || text, target);
   } else if (audio) {
     prompt = await buildAudioPrompt(msg, audio, caption || text, target);
+  } else if (document) {
+    prompt = await buildDocumentPrompt(document, caption || text, target);
   } else if (hasPhoto) {
     prompt = await buildPhotoPrompt(msg, caption || text, target);
   } else {
@@ -1091,6 +1095,84 @@ async function buildAudioPrompt(
   return userText
     ? `${ref}\n\n${userText}`
     : `${ref}\n\nNo caption was provided — figure out what the user wants, or wait for follow-up instructions.`;
+}
+
+// ── Documents (any other file) ──────────────────────────────────────
+//
+// Everything sent "as a file" that isn't a video/* or audio/* document (those
+// are claimed above): .csv, .md, .txt, .pdf, spreadsheets, archives, code —
+// anything. Same treatment: download to disk, hand Claude the path. Text-like
+// files and PDFs are directly readable with the Read tool; the agent decides
+// how to handle the rest.
+
+type DocumentAttachment = {
+  file_id: string;
+  file_unique_id: string;
+  file_name: string | null;
+  mime_type: string | null;
+  size: number;
+};
+
+function extractDocument(msg: TelegramMessage): DocumentAttachment | null {
+  if (!msg.document) return null;
+  return {
+    file_id: msg.document.file_id,
+    file_unique_id: msg.document.file_unique_id,
+    file_name: msg.document.file_name ?? null,
+    mime_type: msg.document.mime_type ?? null,
+    size: msg.document.file_size ?? 0,
+  };
+}
+
+/** Keep the original filename readable on disk, but strip anything that could
+ *  escape the incoming dir or confuse the shell. */
+function safeFileName(name: string): string {
+  const base = name.split(/[/\\]/).pop() ?? '';
+  const cleaned = base.replace(/[^\w.\- ]+/g, '_').replace(/^\.+/, '');
+  return truncate(cleaned, 80);
+}
+
+/**
+ * Download a document and return a Claude prompt that points at the local
+ * file — mirrors buildPhotoPrompt. Returns '' if we already replied with an
+ * error (too big, or download failed).
+ */
+async function buildDocumentPrompt(
+  doc: DocumentAttachment,
+  userText: string,
+  target: SendTarget
+): Promise<string> {
+  if (doc.size > TG_FILE_LIMIT) {
+    await sendTelegram(
+      "📄 <b>File received, but it's too big.</b>\nTelegram bots can only download files up to 20 MB.",
+      { target }
+    );
+    return '';
+  }
+
+  // Prefix with file_unique_id so two uploads named "notes.txt" don't clobber
+  // each other, but keep the original name so the agent sees what it is.
+  const name = doc.file_name ? safeFileName(doc.file_name) : '';
+  const destPath = join(
+    INCOMING_DIR,
+    name ? `${doc.file_unique_id}-${name}` : doc.file_unique_id
+  );
+  const dl = await downloadTelegramFile(doc.file_id, destPath);
+  if (!dl.ok) {
+    await sendTelegram(`⚠️ <b>Failed to download file</b>\n${escapeHtml(dl.error)}`, { target });
+    return '';
+  }
+
+  const desc = [
+    doc.file_name ? `original name: ${doc.file_name}` : null,
+    doc.mime_type ? `type: ${doc.mime_type}` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const ref = `A file was attached at: ${destPath}${desc ? ` (${desc})` : ''}\nUse your Read tool to view it (text files and PDFs read directly); for other formats, inspect it with your own tools as needed.`;
+  return userText
+    ? `${ref}\n\n${userText}`
+    : `${ref}\n\nNo caption was provided — summarize the file's contents, or wait for follow-up instructions.`;
 }
 
 function truncate(s: string, max: number): string {

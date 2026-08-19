@@ -363,6 +363,10 @@ Photos are downloaded to `data/incoming/<file_unique_id>.jpg` and the local path
 
 Videos, round video notes, animations, and `video/*` documents work just like photos: the file is downloaded to `data/incoming/<file_unique_id>` and its local path is appended to the prompt. Claude decides what to do with it using its own tools (extract frames or audio with `ffmpeg`, etc.) — nothing is pre-processed. The caption (if any) is used as the user message. Telegram bots can't download files larger than 20 MB, so bigger videos are rejected.
 
+## Sending files
+
+Any other document (`.csv`, `.md`, `.txt`, `.pdf`, spreadsheets, code, archives, …) works the same way: it's downloaded to `data/incoming/<file_unique_id>-<original name>` (the original filename is kept, sanitized) and the local path — plus the original name and MIME type — is appended to the prompt. Text files and PDFs are readable directly with Claude's `Read` tool; other formats are left to the agent's own tools. With no caption the agent is asked to summarize the file. The same 20 MB Telegram bot download limit applies.
+
 ## Data
 
 Everything is stored in `data/app.db` (SQLite). Two tables:
