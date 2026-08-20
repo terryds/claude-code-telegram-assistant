@@ -1,15 +1,20 @@
 /**
- * Drives Claude Code's subscription sign-in (`claude setup-token`) from the
+ * Drives Claude Code's subscription sign-in (`claude auth login`) from the
  * dashboard, so the operator never has to open a terminal.
  *
- * `setup-token` is a raw-mode TUI (Ink): it crashes on a plain pipe and needs a
- * real PTY. We allocate one with the system `script` utility (present on Ubuntu
- * and macOS), then:
+ * Unlike the old `setup-token` flow (which minted a token we stored in the DB
+ * and injected per-run), `auth login` writes real credentials to the host
+ * (~/.claude / keychain) — so plain `claude` works machine-wide afterwards,
+ * not just relay-spawned runs.
+ *
+ * The login is a raw-mode TUI (Ink): it crashes on a plain pipe and needs a
+ * real PTY (see pty-bridge.py). We:
  *   1. read its output and scrape the OAuth authorize URL,
- *   2. hand the URL to the UI (the user authorizes in their own browser — the
- *      flow is out-of-band, redirecting to a hosted page that shows a code),
- *   3. write the pasted code back into the PTY,
- *   4. let the CLI finish the exchange and store the subscription credentials.
+ *   2. hand the URL to the UI (the user authorizes in their own browser; the
+ *      CLI polls the OAuth server and usually finishes on its own),
+ *   3. optionally write a pasted code back into the PTY (fallback path —
+ *      the redirect page shows one),
+ *   4. watch for the CLI's "Login successful." to mark completion.
  *
  * Only one login runs at a time.
  */
@@ -38,14 +43,11 @@ type LoginSession = {
   proc: Subproc;
   buf: string;
   url: string | null;
-  token: string | null;
   state: LoginState;
   error: string | null;
 };
 
 let session: LoginSession | null = null;
-
-const TOKEN_RE = /sk-ant-oat[0-9]{0,2}-[A-Za-z0-9_-]{20,}/;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -73,34 +75,15 @@ function tidyTail(raw: string, max = 500): string {
 }
 
 /**
- * Reconstruct the authorize URL from PTY output. Ink hard-wraps the URL across
- * lines (inserting real newlines) and follows it with a blank line, so we join
- * the contiguous non-blank lines starting at the URL. Returns null until the
- * full block has printed (terminated by a blank line and containing `state=`).
+ * Extract the authorize URL from PTY output. `auth login` prints it on one
+ * line (the bridge sets a 1000-col window, so no wrapping), prefixed with
+ * "If the browser didn't open, visit: ". Requiring the trailing newline
+ * guarantees we never return a partially-flushed URL.
  */
 function extractUrl(raw: string): string | null {
-  const lines = stripAnsi(raw).split('\n');
-  const start = lines.findIndex((l) => /https?:\/\/\S*oauth\/authorize/i.test(l));
-  if (start === -1) return null;
-
-  const parts: string[] = [];
-  let terminated = false;
-  for (let i = start; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (t === '') {
-      if (parts.length) {
-        terminated = true;
-        break;
-      }
-      continue;
-    }
-    parts.push(t);
-  }
-  if (!terminated) return null;
-
-  const url = parts.join('').replace(/\s+/g, '');
-  if (!/^https?:\/\//.test(url) || !/state=/.test(url)) return null;
-  return url;
+  const m = stripAnsi(raw).match(/(https?:\/\/\S*oauth\/authorize\S*)[ \t]*[\r\n]/i);
+  if (!m || !/state=/.test(m[1])) return null;
+  return m[1];
 }
 
 /** Accept a bare code, or extract it from a pasted callback URL. */
@@ -120,11 +103,11 @@ function normalizePastedCode(raw: string): string {
   return s;
 }
 
-// Run setup-token inside a real PTY via our Python bridge (the server has no
+// Run the login inside a real PTY via our Python bridge (the server has no
 // controlling tty of its own, and the raw-mode TUI requires one).
 const BRIDGE = new URL('./pty-bridge.py', import.meta.url).pathname;
 function ptyCommand(): string[] {
-  return ['python3', BRIDGE, 'claude', 'setup-token'];
+  return ['python3', BRIDGE, 'claude', 'auth', 'login'];
 }
 
 export function cancelClaudeLogin(): void {
@@ -144,7 +127,7 @@ export async function isClaudeLoggedIn(): Promise<boolean> {
 }
 
 /**
- * Start `claude setup-token` in a PTY and return the authorize URL to show the
+ * Start `claude auth login` in a PTY and return the authorize URL to show the
  * user. Replaces any in-progress login.
  */
 export async function startClaudeLogin(): Promise<{ url: string }> {
@@ -170,7 +153,6 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
     proc,
     buf: '',
     url: null,
-    token: null,
     state: 'awaiting',
     error: null,
   };
@@ -178,9 +160,9 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
   console.error(`[claude-login] started pid=${proc.pid} cmd=${ptyCommand().join(' ')}`);
 
   // Continuously drain stdout (so the PTY doesn't block) and watch for both the
-  // authorize URL and the minted token. The token appears either after the user
-  // pastes a code (headless/OOB) OR on its own when setup-token captures the code
-  // via a loopback browser tab (desktop) — so we must catch it without a paste.
+  // authorize URL and completion. The CLI polls the OAuth server, so "Login
+  // successful." usually appears on its own once the user authorizes — with a
+  // pasted code (the fallback path) or without one.
   (async () => {
     try {
       const reader = proc.stdout.getReader();
@@ -190,14 +172,17 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
         if (done) break;
         s.buf += dec.decode(value, { stream: true });
         if (!s.url) s.url = extractUrl(s.buf);
-        if (!s.token && s.state === 'awaiting') {
+        if (s.state === 'awaiting') {
           const clean = stripAnsi(s.buf);
-          const m = clean.match(TOKEN_RE);
-          if (m) {
-            s.token = m[0];
-            setOauthToken('claude', s.token);
+          if (/Login successful/i.test(clean)) {
+            // Credentials now live on the host (~/.claude / keychain). Clear
+            // any legacy setup-token from the DB so runs and auth probes stop
+            // overriding the machine-wide login.
+            setOauthToken('claude', '');
             s.state = 'done';
-          } else if (/OAuth error:|Invalid code|expired|Press Enter to retry/i.test(clean)) {
+          } else if (
+            /OAuth error:|Invalid code|expired|Press Enter to retry|Login failed/i.test(clean)
+          ) {
             // The CLI rejected the code (wrong/truncated/expired). Surface it
             // and stop, rather than leaving the user staring at a spinner.
             const line = clean.match(/OAuth error:[^\n\r]*/i)?.[0];
@@ -216,7 +201,7 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
     } catch {
       // process ended / killed
     }
-    // The process has exited. If we never got a token, it's a failure.
+    // The process has exited. If we never saw success, it's a failure.
     const exitCode = await proc.exited.catch(() => -1);
     if (s.state === 'awaiting') {
       s.state = 'error';
@@ -224,7 +209,7 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
       s.error =
         tail || `Sign-in ended before completing (CLI exited code ${exitCode}, no output).`;
       console.error(
-        `[claude-login] setup-token exited code=${exitCode} bufLen=${s.buf.length} tail=${JSON.stringify(
+        `[claude-login] auth login exited code=${exitCode} bufLen=${s.buf.length} tail=${JSON.stringify(
           stripAnsi(s.buf).slice(-400)
         )}`
       );
@@ -262,9 +247,9 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
 }
 
 /**
- * Feed the code the user pasted into the waiting CLI (the headless/OOB path).
- * Completion is observed asynchronously by the drain loop (it captures the
- * minted token), so callers poll `claudeLoginStatus` for the result.
+ * Feed the code the user pasted into the waiting CLI (the fallback path when
+ * the CLI's own polling doesn't complete). Completion is observed
+ * asynchronously by the drain loop, so callers poll `claudeLoginStatus`.
  */
 export async function submitClaudeLoginCode(
   raw: string
@@ -299,7 +284,7 @@ export async function submitClaudeLoginCode(
   return { ok: true };
 }
 
-/** Poll the in-progress sign-in. `done` means a token was captured + saved. */
+/** Poll the in-progress sign-in. `done` means the host is now signed in. */
 export function claudeLoginStatus(): { state: 'idle' | LoginState; error?: string } {
   if (!session) return { state: 'idle' };
   return { state: session.state, error: session.error ?? undefined };

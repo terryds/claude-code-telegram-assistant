@@ -153,9 +153,11 @@ export function setApiKey(id: EngineId, key: string): void {
 }
 
 /**
- * A long-lived subscription OAuth token (Claude's `setup-token` output). When
- * set, it's injected as CLAUDE_CODE_OAUTH_TOKEN so the relay authenticates with
- * the subscription without relying on on-disk credentials. Only Claude uses it.
+ * Legacy long-lived subscription OAuth token (the old `claude setup-token`
+ * onboarding stored one here). New sign-ins use `claude auth login`, which
+ * writes credentials to the host itself and clears this. While a token is
+ * still present (installs that haven't re-signed-in), it's injected as
+ * CLAUDE_CODE_OAUTH_TOKEN so they keep working. Only Claude uses it.
  */
 export function getOauthToken(id: EngineId): string | null {
   return getSetting(oauthTokenKey(id));
@@ -214,8 +216,8 @@ export function clearAuthProbe(id: EngineId): void {
 /**
  * Env overrides to apply when spawning the CLI:
  *  - API-key auth: inject the saved key under the var the CLI reads.
- *  - Subscription auth: nothing, unless we captured a long-lived OAuth token
- *    (Claude), in which case inject it. The CLI otherwise uses its own login.
+ *  - Subscription auth: nothing — the CLI uses the host's own login — unless a
+ *    legacy setup-token is still stored (Claude), in which case inject it.
  */
 export function authEnv(id: EngineId): Record<string, string> {
   if (getAuthMethod(id) === 'apikey') {

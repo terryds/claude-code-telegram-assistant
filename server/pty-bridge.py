@@ -3,7 +3,7 @@
 
 Runs `CMD [ARGS...]` attached to a real pseudo-terminal, relaying the parent's
 stdin/stdout to it. Used so the relay can drive Claude Code's raw-mode TUI
-sign-in (`claude setup-token`) from the server, which has no controlling tty of
+sign-in (`claude auth login`) from the server, which has no controlling tty of
 its own (the system `script` util refuses a non-tty stdin on some platforms).
 
 A wide window size is set so long output (the OAuth URL) is not wrapped.

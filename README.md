@@ -107,10 +107,11 @@ offer two methods per engine, switchable anytime:
 
 - **Subscription** — sign in with your Claude or ChatGPT/Codex plan, from the
   dashboard, no terminal:
-  - **Claude Code** drives `claude setup-token` to mint a long-lived OAuth token
-    (this is why `python3` is needed — it runs the CLI in a PTY). Click **Sign in
-    with Claude** and authorize in your browser. On a desktop it completes on its
-    own; on a headless host you paste the code the page shows you.
+  - **Claude Code** drives `claude auth login` (this is why `python3` is needed
+    — it runs the CLI in a PTY). Click **Sign in with Claude** and authorize in
+    your browser; the CLI detects completion on its own (pasting the code the
+    page shows is a fallback). This signs in the host's `claude` itself, so the
+    CLI also works outside the relay — no separate terminal login needed.
   - **Codex** drives `codex login --device-auth`. Click **Sign in with Codex**,
     open the page, and enter the one-time code.
 - **API key** — paste an Anthropic / OpenAI key. It's stored in `data/app.db` and
@@ -118,8 +119,13 @@ offer two methods per engine, switchable anytime:
   pay-per-token API billing, not your subscription).
 
 Detection is cheap — `claude auth status` / `codex login status`, no model call.
-You can also authenticate the CLI yourself on the host (`claude` then `/login`,
-or `codex login`) and the relay will pick it up.
+You can also authenticate the CLI yourself on the host (`claude auth login` or
+`codex login`) and the relay will pick it up.
+
+Older installs signed in via `claude setup-token`, which stored a token in
+`data/app.db` and injected it per-run. That token still works (it's injected as
+`CLAUDE_CODE_OAUTH_TOKEN` while present), and a new **Sign in with Claude**
+clears it in favor of the machine-wide login.
 
 ## Production build
 

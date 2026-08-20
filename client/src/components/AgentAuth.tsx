@@ -7,7 +7,7 @@ const DOCS: Record<
 > = {
   claude: {
     label: 'Claude Code',
-    loginCmd: 'claude   # then type /login and follow the flow',
+    loginCmd: 'claude auth login',
     keyEnv: 'ANTHROPIC_API_KEY',
     keyHelp: 'Anthropic API key (starts with sk-ant-…)',
     href: 'https://docs.claude.com/en/docs/claude-code/overview',
@@ -207,9 +207,9 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [codexUrl]);
 
-  // While a sign-in is in progress, poll for completion. setup-token finishes
-  // either on its own (loopback browser tab) or after the pasted code — both
-  // surface here as state 'done'.
+  // While a sign-in is in progress, poll for completion. `claude auth login`
+  // polls the OAuth server itself, so it finishes on its own once the user
+  // authorizes (pasting the code is only a fallback) — surfaces as 'done'.
   useEffect(() => {
     if (!loginUrl) return;
     let stopped = false;
@@ -355,8 +355,8 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
             ) : (
               <div className="space-y-3">
                 <p className="text-zinc-300">
-                  A browser should open automatically — just <strong>authorize</strong>,
-                  and this finishes on its own. If it didn't open:
+                  Open the sign-in page and <strong>authorize</strong> — this
+                  finishes on its own, even from your phone:
                 </p>
                 <div className="flex gap-2">
                   <a
@@ -380,8 +380,8 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
                 </div>
                 <div className="border-t border-zinc-800 pt-3 space-y-1.5">
                   <p className="text-zinc-400 text-xs">
-                    On a remote server (no browser)? Paste the code the page shows
-                    you — or the full callback URL:
+                    Authorized but stuck on “waiting”? Paste the code the page
+                    shows you — or the full callback URL:
                   </p>
                   <div className="flex gap-2">
                     <input
@@ -415,8 +415,11 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
               </pre>
             )}
             <p className="text-xs text-zinc-600">
-              Prefer the terminal? Run <code className="text-zinc-400">claude</code> then{' '}
-              <code className="text-zinc-400">/login</code> on the host instead.
+              Prefer the terminal? Run{' '}
+              <code className="text-zinc-400">claude auth login</code> on the host
+              instead. Either way the whole machine is signed in — plain{' '}
+              <code className="text-zinc-400">claude</code> works outside the relay
+              too.
             </p>
           </div>
         ) : (
