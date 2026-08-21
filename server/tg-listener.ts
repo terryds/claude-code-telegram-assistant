@@ -4,6 +4,7 @@ import { getSetting, setSetting, deleteSetting, db, logMessage, logStep, listJob
 import {
   getTelegramConfig,
   getUpdatesRaw,
+  applyBotDescription,
   sendOnboardingDone,
   sendTelegram,
   sendTelegramRich,
@@ -1185,6 +1186,9 @@ function escapeHtml(s: string): string {
 }
 
 export async function applyBotCommands(): Promise<void> {
+  // Keep the profile's dashboard link current too (host/port can change
+  // between restarts). No-op when no reachable URL is known yet.
+  void applyBotDescription();
   await setMyCommands([
     { command: 'stop', description: 'Interrupt the agent while it is working' },
     { command: 'new_session', description: 'Start a new conversation' },

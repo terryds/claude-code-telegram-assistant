@@ -1,4 +1,5 @@
 import { getSetting } from './db.ts';
+import { getDashboardUrl } from './dashboard-url.ts';
 
 export type TelegramConfig = {
   botToken: string | null;
@@ -182,14 +183,60 @@ export async function getRecentChats(token: string): Promise<Ok<{ chats: ChatInf
 export const ONBOARDING_EXAMPLE_PROMPT =
   "Deploy filebrowser from https://github.com/filebrowser/filebrowser so I can browse this computer's files from my phone, like Windows Explorer / Finder. Set it up and send me the URL when it's ready.";
 
+/**
+ * Point the bot's profile at the dashboard: the short description (shown on
+ * the profile page) and the full description (shown while the chat is empty)
+ * both carry the dashboard URL. Returns true when a reachable URL was known
+ * and Telegram accepted the profile-page one — the caller can then truthfully
+ * tell the user to look at the bot's profile.
+ */
+export async function applyBotDescription(): Promise<boolean> {
+  const url = getDashboardUrl();
+  const { botToken } = getTelegramConfig();
+  if (!url || !botToken) return false;
+  const call = async (method: string, body: object): Promise<boolean> => {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json()) as { ok: boolean };
+      return data.ok;
+    } catch {
+      return false;
+    }
+  };
+  const short = `Dashboard: ${url}`;
+  const shortOk =
+    short.length <= 120 // Telegram's short_description cap
+      ? await call('setMyShortDescription', { short_description: short })
+      : false;
+  await call('setMyDescription', {
+    description: `Relay to a coding agent running on this machine. Dashboard (message logs, bookmarks, settings): ${url}`,
+  });
+  return shortOk;
+}
+
 // Onboarding-complete greeting, used by both chat capture and QR pairing.
 // Two bubbles: the greeting, then the example prompt as a tap-to-copy code
 // block with a copy_text button — the user pastes and sends it themselves, so
 // it reaches the agent as an ordinary self-contained message from them.
 export async function sendOnboardingDone(): Promise<void> {
+  const inProfile = await applyBotDescription();
+  const dashboardUrl = getDashboardUrl();
   await sendTelegram(
-    "✅ You're all set. What can I help you with?\n\n" +
-      "For starters: if you'd like a Windows Explorer / Finder-style file browser for this computer, copy the prompt below and send it to me."
+    [
+      "✅ You're all set." +
+        (inProfile
+          ? " I've also put the dashboard link in my bot profile, so it's always one tap away — that's where you can see message logs, bookmarks, settings, and more:"
+          : ''),
+      ...(inProfile && dashboardUrl ? ['', dashboardUrl] : []),
+      '',
+      'What can I help you with?',
+      '',
+      "For starters: if you'd like a Windows Explorer / Finder-style file browser for this computer, copy the prompt below and send it to me.",
+    ].join('\n')
   );
   const promptBubble = `<pre>${ONBOARDING_EXAMPLE_PROMPT}</pre>`;
   const sent = await sendTelegram(promptBubble, {
