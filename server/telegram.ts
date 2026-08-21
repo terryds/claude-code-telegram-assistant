@@ -176,9 +176,37 @@ export async function getRecentChats(token: string): Promise<Ok<{ chats: ChatInf
   return { ok: true, chats };
 }
 
+// The example first prompt suggested right after onboarding. Self-contained —
+// the agent run it spawns sees only this text — and must stay under the
+// 256-char cap of the copy_text button that carries it.
+export const ONBOARDING_EXAMPLE_PROMPT =
+  "Deploy filebrowser from https://github.com/filebrowser/filebrowser so I can browse this computer's files from my phone, like Windows Explorer / Finder. Set it up and send me the URL when it's ready.";
+
+// Onboarding-complete greeting, used by both chat capture and QR pairing.
+// Two bubbles: the greeting, then the example prompt as a tap-to-copy code
+// block with a copy_text button — the user pastes and sends it themselves, so
+// it reaches the agent as an ordinary self-contained message from them.
+export async function sendOnboardingDone(): Promise<void> {
+  await sendTelegram(
+    "✅ You're all set. What can I help you with?\n\n" +
+      "For starters: if you'd like a Windows Explorer / Finder-style file browser for this computer, copy the prompt below and send it to me."
+  );
+  const promptBubble = `<pre>${ONBOARDING_EXAMPLE_PROMPT}</pre>`;
+  const sent = await sendTelegram(promptBubble, {
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: '📋 Tap to copy', copy_text: { text: ONBOARDING_EXAMPLE_PROMPT } }],
+      ],
+    },
+  });
+  // copy_text needs Bot API ≥ 7.11; an older server rejects the whole send.
+  // Resend without the button — the <pre> block still copies on tap.
+  if (!sent.ok) await sendTelegram(promptBubble);
+}
+
 export async function sendTelegram(
   text: string,
-  options: { html?: boolean; target?: SendTarget } = {}
+  options: { html?: boolean; target?: SendTarget; replyMarkup?: object } = {}
 ): Promise<{ ok: boolean; error?: string }> {
   const { botToken, chatId } = getTelegramConfig();
   const target = options.target ?? (chatId ? { chatId } : null);
@@ -193,6 +221,7 @@ export async function sendTelegram(
         ...(target.threadId ? { message_thread_id: target.threadId } : {}),
         text,
         ...(html ? { parse_mode: 'HTML' } : {}),
+        ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
         disable_web_page_preview: true,
       }),
     });

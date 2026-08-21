@@ -4,6 +4,7 @@ import { getSetting, setSetting, deleteSetting, db, logMessage, logStep, listJob
 import {
   getTelegramConfig,
   getUpdatesRaw,
+  sendOnboardingDone,
   sendTelegram,
   sendTelegramRich,
   sendChatAction,
@@ -599,7 +600,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     setRelayEnabled(true);
     applyBotCommands().catch(() => {});
     // Acknowledge via the token used for this very chat — sendTelegram reads chat_id from settings.
-    await sendTelegram("✅ You're all set. What can I help you with?");
+    await sendOnboardingDone();
     return;
   }
 

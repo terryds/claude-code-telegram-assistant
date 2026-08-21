@@ -12,7 +12,7 @@
 // getMe result.
 
 import { getSetting, setSetting, deleteSetting } from './db.ts';
-import { getBotInfo, sendTelegram, type BotInfo } from './telegram.ts';
+import { getBotInfo, sendOnboardingDone, sendTelegram, type BotInfo } from './telegram.ts';
 import { setRelayEnabled, applyBotCommands } from './tg-listener.ts';
 
 // One deployed instance of worker/ serves every install; self-hosters can
@@ -201,7 +201,7 @@ async function applyPairing(
     setSetting('captured_chat_id', chatId);
     setRelayEnabled(true);
     applyBotCommands().catch(() => {});
-    sendTelegram('✅ You\'re all set. What can I help you with?').catch(() => {});
+    sendOnboardingDone().catch(() => {});
   } else {
     // No owner reported — token is saved, but the chat still needs the
     // classic capture step. Clear any stale link from a previous bot.
