@@ -1,11 +1,13 @@
 /**
  * Best-effort reachable URL for the dashboard, for inclusion in Telegram
  * messages. The user reads those on their phone, so `localhost` links are
- * dead on arrival — prefer the machine's FQDN if it has a real domain, then
- * fall back to the host's LAN/public IPv4, with a DASHBOARD_URL env override
- * for setups behind a proxy or DNS name.
+ * dead on arrival — and a LAN/VPN IP is little better (wrong network, goes
+ * stale). Only the machine's full domain name (`hostname -f`) is trusted,
+ * with a DASHBOARD_URL env override for setups behind a proxy or DNS name.
+ * With neither, there is no URL: callers get null and must skip whatever
+ * they wanted the link for.
  */
-import { hostname, networkInterfaces } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 let serverPort: number | null = null;
 
@@ -14,38 +16,34 @@ export function setDashboardPort(port: number | undefined): void {
   serverPort = port ?? null;
 }
 
+let cachedFqdn: string | null | undefined;
+
 /**
- * The OS hostname, but only when it's a fully-qualified domain name that a
+ * The machine's full domain name per `hostname -f`, but only when it's one a
  * phone could plausibly resolve — i.e. it has a dot and isn't in a
  * link-local/private suffix like `.local` (mDNS) or `.lan`.
  */
 function fqdnHostname(): string | null {
-  const name = hostname().trim().replace(/\.$/, '').toLowerCase();
-  if (!name.includes('.')) return null;
-  if (/\.(local|localdomain|internal|intranet|lan|home|arpa)$/.test(name)) return null;
-  return name;
-}
-
-function hostAddress(): string | null {
-  const candidates: { name: string; address: string }[] = [];
-  for (const [name, infos] of Object.entries(networkInterfaces())) {
-    for (const info of infos ?? []) {
-      if (info.family !== 'IPv4' || info.internal) continue;
-      if (info.address.startsWith('169.254.')) continue; // link-local
-      candidates.push({ name, address: info.address });
-    }
+  if (cachedFqdn !== undefined) return cachedFqdn;
+  let name = '';
+  try {
+    name = execFileSync('hostname', ['-f'], { encoding: 'utf8', timeout: 2000 }).trim();
+  } catch {
+    // no `hostname` binary or it errored — treat as no domain
   }
-  if (candidates.length === 0) return null;
-  // Prefer real NICs (en0/eth0) over VPN/tunnel interfaces (utun, tailscale0).
-  const physical = candidates.find((c) => /^(en|eth)\d/.test(c.name));
-  return (physical ?? candidates[0]).address;
+  name = name.replace(/\.$/, '').toLowerCase();
+  const usable =
+    name.includes('.') &&
+    !/\.(local|localdomain|internal|intranet|lan|home|arpa)$/.test(name);
+  cachedFqdn = usable ? name : null;
+  return cachedFqdn;
 }
 
 export function getDashboardUrl(): string | null {
   const override = process.env.DASHBOARD_URL?.trim();
   if (override) return override.replace(/\/+$/, '');
   if (serverPort == null) return null;
-  const host = fqdnHostname() ?? hostAddress();
+  const host = fqdnHostname();
   if (!host) return null;
   return `http://${host}:${serverPort}`;
 }
