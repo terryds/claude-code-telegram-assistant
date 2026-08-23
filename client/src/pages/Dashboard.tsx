@@ -430,6 +430,9 @@ const STEP_CLEANUP_OPTIONS: Array<{ seconds: number; label: string }> = [
   { seconds: 60, label: '1 min' },
   { seconds: 300, label: '5 min' },
   { seconds: 900, label: '15 min' },
+  { seconds: 1800, label: '30 min' },
+  { seconds: 3600, label: '1 hour' },
+  { seconds: 7200, label: '2 hours' },
 ];
 
 function StepCleanupCard() {
@@ -488,7 +491,7 @@ function StepCleanupCard() {
         final reply always stays.
       </p>
       <div className="flex items-center gap-3">
-        <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+        <div className="inline-flex flex-wrap rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
           {options.map((o) => (
             <button
               key={o.seconds}

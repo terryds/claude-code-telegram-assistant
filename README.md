@@ -366,7 +366,7 @@ script is in use.
 
 The agent streams its progress (thinking, tool calls, results) back to the chat as it works, and the listener keeps receiving messages the whole time.
 
-By default these tool-step messages are removed from the chat 1 minute after they were sent, so the conversation stays readable — only the final reply remains. The **Step messages** setting on the dashboard changes the delay (30 sec / 1 min / 5 min / 15 min) or turns removal off ("Never"); other durations up to 48 h can be set via `POST /api/step-cleanup`. Removal is best-effort and DB-backed: pending deletions survive a relay restart, and Telegram itself refuses to delete messages older than 48 hours.
+By default these tool-step messages are removed from the chat 1 minute after they were sent, so the conversation stays readable — only the final reply remains. The **Step messages** setting on the dashboard changes the delay (30 sec up to 2 hours) or turns removal off ("Never"); other durations up to 48 h can be set via `POST /api/step-cleanup`. Removal is best-effort and DB-backed: pending deletions survive a relay restart, and Telegram itself refuses to delete messages older than 48 hours.
 
 To interrupt:
 
