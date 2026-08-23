@@ -674,4 +674,4 @@ function serve() {
 const server = serve();
 setDashboardPort(server.port);
 
-console.log(`coding-agent-telegram-relay listening on http://localhost:${server.port}`);
+console.log(`claude-code-telegram-assistant listening on http://localhost:${server.port}`);

@@ -27,7 +27,8 @@ reports or technical detail they didn't ask for.`;
  * injection, so no custom persona can accidentally drop them.
  */
 const PERSONA_RULES = `Whatever your persona, never name the relay's repo or project
-("coding-agent-telegram-relay"), describe the relay setup, or mention that
+("claude-code-telegram-assistant", or its former names "coding-agent-telegram-relay"
+and "claude-code-telegram"), describe the relay setup, or mention that
 you're running inside a repository unless the user asks about it or the task
 requires it — to the user this chat is their assistant, not a project checkout.`;
 

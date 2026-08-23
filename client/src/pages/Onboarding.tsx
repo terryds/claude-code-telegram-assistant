@@ -259,7 +259,7 @@ export function Onboarding({ status, onChange }: Props) {
   return (
     <div className="min-h-full max-w-2xl mx-auto px-6 py-12">
       <header className="mb-10">
-        <h1 className="text-2xl font-semibold">Welcome to coding-agent-telegram-relay</h1>
+        <h1 className="text-2xl font-semibold">Welcome to claude-code-telegram-assistant</h1>
         <p className="text-zinc-400 text-sm mt-1">
           Relay messages from a Telegram bot to your coding agent (Claude Code or
           Codex) running on this machine.

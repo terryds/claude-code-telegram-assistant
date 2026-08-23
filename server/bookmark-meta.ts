@@ -15,7 +15,7 @@ const MAX_ICON_BYTES = 300 * 1024;
 
 // Some sites reject requests without a browser-ish UA.
 const UA =
-  'Mozilla/5.0 (compatible; coding-agent-telegram-relay/1.0; +bookmark-preview)';
+  'Mozilla/5.0 (compatible; claude-code-telegram-assistant/1.0; +bookmark-preview)';
 
 export type PageMeta = {
   /** URL after scheme resolution + redirects — what we store. */

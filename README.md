@@ -1,4 +1,4 @@
-# coding-agent-telegram-relay
+# claude-code-telegram-assistant
 
 A tiny relay that forwards Telegram messages to a coding agent — [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) **or** [Codex](https://developers.openai.com/codex/cli) — running on your VPS, and sends the agent's response back. Single-user, self-hosted, no external services beyond Telegram and your local CLI.
 
@@ -182,8 +182,8 @@ You can authenticate your agent from the dashboard during onboarding (subscripti
 
 ```bash
 cd ~
-git clone <your-fork-url> coding-agent-telegram-relay
-cd coding-agent-telegram-relay
+git clone <your-fork-url> claude-code-telegram-assistant
+cd claude-code-telegram-assistant
 bun install
 bun run build
 ```
@@ -197,10 +197,10 @@ Create an ecosystem file so pm2 uses Bun as the interpreter:
 module.exports = {
   apps: [
     {
-      name: 'coding-agent-telegram-relay',
+      name: 'claude-code-telegram-assistant',
       script: 'server/index.ts',
       interpreter: '/home/YOUR_USER/.bun/bin/bun',
-      cwd: '/home/YOUR_USER/coding-agent-telegram-relay',
+      cwd: '/home/YOUR_USER/claude-code-telegram-assistant',
       env: {
         PORT: '3000',
       },
@@ -215,7 +215,7 @@ Replace `YOUR_USER` and verify the Bun path with `which bun`.
 
 ```bash
 pm2 start ecosystem.config.cjs
-pm2 logs coding-agent-telegram-relay   # tail logs
+pm2 logs claude-code-telegram-assistant   # tail logs
 pm2 save                         # persist the process list
 pm2 startup                      # follow the printed instruction to enable on boot
 ```
@@ -223,9 +223,9 @@ pm2 startup                      # follow the printed instruction to enable on b
 **Or, without an ecosystem file** — start directly from the CLI:
 
 ```bash
-cd ~/coding-agent-telegram-relay
+cd ~/claude-code-telegram-assistant
 PORT=3000 pm2 start server/index.ts \
-  --name coding-agent-telegram-relay \
+  --name claude-code-telegram-assistant \
   --interpreter "$(which bun)" \
   --max-restarts 10 \
   --restart-delay 3000
@@ -234,15 +234,15 @@ pm2 save
 pm2 startup   # follow the printed instruction
 ```
 
-`pm2 save` snapshots the env that was current at start time, so the `PORT` value persists across `pm2 resurrect` and reboots. If you change an env var later, restart with `pm2 restart coding-agent-telegram-relay --update-env`.
+`pm2 save` snapshots the env that was current at start time, so the `PORT` value persists across `pm2 resurrect` and reboots. If you change an env var later, restart with `pm2 restart claude-code-telegram-assistant --update-env`.
 
 Common pm2 commands:
 
 ```bash
 pm2 status
-pm2 restart coding-agent-telegram-relay
-pm2 stop coding-agent-telegram-relay
-pm2 logs coding-agent-telegram-relay --lines 200
+pm2 restart claude-code-telegram-assistant
+pm2 stop claude-code-telegram-assistant
+pm2 logs claude-code-telegram-assistant --lines 200
 ```
 
 ### 4. Expose the dashboard
@@ -290,14 +290,14 @@ Visit the dashboard (via tunnel or your domain), complete the three onboarding s
 When you push a new version, deploy it on the VPS with:
 
 ```bash
-cd ~/coding-agent-telegram-relay
+cd ~/claude-code-telegram-assistant
 git pull
 bun install            # if dependencies changed
 bun run build          # rebuild the client
-pm2 restart coding-agent-telegram-relay
+pm2 restart claude-code-telegram-assistant
 ```
 
-`pm2 restart` reuses the saved process config, so you don't need to repeat `pm2 save` unless you changed the start command or env vars (in which case use `pm2 restart coding-agent-telegram-relay --update-env` and re-run `pm2 save`).
+`pm2 restart` reuses the saved process config, so you don't need to repeat `pm2 save` unless you changed the start command or env vars (in which case use `pm2 restart claude-code-telegram-assistant --update-env` and re-run `pm2 save`).
 
 Your bot token, chat link, and Claude session ID live in `data/app.db` — they survive restarts and code updates.
 
@@ -308,22 +308,25 @@ If you're asking the relayed agent itself to update the project (i.e. via Telegr
 The repo ships a deploy helper at [`bin/safe-update-relay`](bin/safe-update-relay) that handles this: it detaches into its own process group, delays briefly so the current reply flushes, runs `git pull` → `bun install` (if deps changed) → `bun run build` → `pm2 restart`, waits for the process to come back online, and pings the chat with the result. A failed pull/build aborts before the restart, leaving the running relay untouched. It also re-execs from `/tmp` first so the `git pull` can safely rewrite the in-repo script mid-deploy.
 
 ```bash
-setsid nohup ~/coding-agent-telegram-relay/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
+setsid nohup ~/claude-code-telegram-assistant/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
 ```
 
 `setsid + nohup + &` keep it alive after `pm2 restart` kills its caller.
 
 Config via env vars (defaults shown):
 
-- `RELAY_PROCESS_NAME` — pm2 process name (default `coding-agent-telegram-relay`)
+- `RELAY_PROCESS_NAME` — pm2 process name (default `claude-code-telegram-assistant`)
 - `RELAY_REPO_DIR` — checkout to deploy (default: auto-derived from the script's
   own location, i.e. the repo it lives in)
 
 <details>
-<summary>One-time VPS migration (from the old <code>claude-code-telegram</code> name)</summary>
+<summary>One-time VPS migration (from an old name: <code>claude-code-telegram</code> or <code>coding-agent-telegram-relay</code>)</summary>
 
-The repo, dir, and pm2 process were renamed. If your VPS still uses the old
-names, after the first pull either rename them or override via env:
+The repo, dir, and pm2 process were renamed (twice: `claude-code-telegram` →
+`coding-agent-telegram-relay` → `claude-code-telegram-assistant`). If your VPS
+still uses an old name, after the first pull either rename things or override
+via env (substitute `coding-agent-telegram-relay` for `claude-code-telegram`
+below if that's the name you're on):
 
 ```bash
 # Option A — keep old names, just override the pm2 process name per run:
@@ -331,10 +334,17 @@ RELAY_PROCESS_NAME=claude-code-telegram ~/claude-code-telegram/bin/safe-update-r
 
 # Option B — migrate to the new names (then the defaults just work):
 pm2 delete claude-code-telegram
-mv ~/claude-code-telegram ~/coding-agent-telegram-relay
-cd ~/coding-agent-telegram-relay
-pm2 start "bun start" --name coding-agent-telegram-relay   # re-add with your usual env (PORT, etc.)
+mv ~/claude-code-telegram ~/claude-code-telegram-assistant
+cd ~/claude-code-telegram-assistant
+pm2 start "bun start" --name claude-code-telegram-assistant   # re-add with your usual env (PORT, etc.)
 pm2 save
+```
+
+GitHub redirects the old repo URLs, so an existing checkout's `git pull` keeps
+working — but update the remote anyway:
+
+```bash
+git remote set-url origin https://github.com/terryds/claude-code-telegram-assistant.git
 ```
 
 The old external `~/bin/safe-update-relay` can be deleted once the in-repo

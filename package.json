@@ -1,5 +1,5 @@
 {
-  "name": "coding-agent-telegram-relay",
+  "name": "claude-code-telegram-assistant",
   "version": "0.1.0",
   "private": true,
   "type": "module",

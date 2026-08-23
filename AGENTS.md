@@ -161,7 +161,7 @@ hosting your own run mid-reply. Update with the detached helper (pings the
 chat when done; a failed pull/build aborts before the restart):
 
 ```bash
-setsid nohup ~/coding-agent-telegram-relay/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
+setsid nohup ~/claude-code-telegram-assistant/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
 ```
 
 Env config (`RELAY_PROCESS_NAME`, `RELAY_REPO_DIR`), setup/install steps
