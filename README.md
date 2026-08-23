@@ -315,7 +315,10 @@ setsid nohup ~/claude-code-telegram-assistant/bin/safe-update-relay >/dev/null 2
 
 Config via env vars (defaults shown):
 
-- `RELAY_PROCESS_NAME` — pm2 process name (default `claude-code-telegram-assistant`)
+- `RELAY_PROCESS_NAME` — pm2 process name (default: auto-detected — the pm2
+  process whose working directory is this repo, else the first known name that
+  exists in pm2: `claude-code-telegram-assistant`, then the legacy
+  `coding-agent-telegram-relay`)
 - `RELAY_REPO_DIR` — checkout to deploy (default: auto-derived from the script's
   own location, i.e. the repo it lives in)
 
@@ -323,10 +326,11 @@ Config via env vars (defaults shown):
 <summary>One-time VPS migration (from an old name: <code>claude-code-telegram</code> or <code>coding-agent-telegram-relay</code>)</summary>
 
 The repo, dir, and pm2 process were renamed (twice: `claude-code-telegram` →
-`coding-agent-telegram-relay` → `claude-code-telegram-assistant`). If your VPS
-still uses an old name, after the first pull either rename things or override
-via env (substitute `coding-agent-telegram-relay` for `claude-code-telegram`
-below if that's the name you're on):
+`coding-agent-telegram-relay` → `claude-code-telegram-assistant`).
+`bin/safe-update-relay` auto-detects the pm2 process (by working directory,
+falling back to every known historical name), so `/update` and the dashboard
+button keep working on an un-migrated VPS. Migrating is still recommended so
+the names match the docs:
 
 ```bash
 # Option A — keep old names, just override the pm2 process name per run:

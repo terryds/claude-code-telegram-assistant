@@ -12,7 +12,10 @@
 # file free to be updated underneath us.
 #
 # Config (env overrides, with sensible defaults):
-#   RELAY_PROCESS_NAME   pm2 process name      (default: claude-code-telegram-assistant)
+#   RELAY_PROCESS_NAME   pm2 process name      (default: auto-detected — the pm2
+#                        process whose cwd is this repo, else the first known
+#                        name that exists: claude-code-telegram-assistant, then
+#                        the legacy coding-agent-telegram-relay)
 #   RELAY_REPO_DIR       repo checkout to pull (default: the repo this script is in)
 #
 # Notifies the linked Telegram chat at the end with a status summary or error.
@@ -38,8 +41,34 @@ fi
 trap 'rm -f "$0" 2>/dev/null' EXIT
 
 DELAY="${1:-6}"
-PROCESS_NAME="${RELAY_PROCESS_NAME:-claude-code-telegram-assistant}"
 REPO_DIR="${RELAY_REPO_DIR}"
+
+# Resolve the pm2 process to restart. Installs made before the project was
+# renamed still run under the legacy name, so an explicit env override wins,
+# then the process actually running from this repo, then known names.
+resolve_process_name() {
+  if [ -n "${RELAY_PROCESS_NAME:-}" ]; then
+    echo "$RELAY_PROCESS_NAME"
+    return
+  fi
+  local jlist by_cwd candidate
+  jlist=$(pm2 jlist 2>/dev/null) || jlist='[]'
+  by_cwd=$(echo "$jlist" | jq -r --arg dir "$REPO_DIR" \
+    '[.[] | select(.pm2_env.pm_cwd == $dir) | .name][0] // empty' 2>/dev/null)
+  if [ -n "$by_cwd" ]; then
+    echo "$by_cwd"
+    return
+  fi
+  for candidate in claude-code-telegram-assistant coding-agent-telegram-relay claude-code-telegram; do
+    if echo "$jlist" | jq -e --arg n "$candidate" \
+      'any(.[]; .name == $n)' >/dev/null 2>&1; then
+      echo "$candidate"
+      return
+    fi
+  done
+  echo "claude-code-telegram-assistant"
+}
+PROCESS_NAME="$(resolve_process_name)"
 DB="$REPO_DIR/data/app.db"
 STATE_FILE="$REPO_DIR/data/update-state.json"
 
@@ -103,7 +132,8 @@ fi
 BUILD_OUT=$(bun run build 2>&1) || fail "bun run build" "$BUILD_OUT"
 
 # Step 4: restart pm2 (here's where the relay dies)
-pm2 restart "$PROCESS_NAME" >/dev/null 2>&1 || fail "pm2 restart" "see pm2 logs"
+RESTART_OUT=$(pm2 restart "$PROCESS_NAME" 2>&1) \
+  || fail "pm2 restart" "process '$PROCESS_NAME': $RESTART_OUT"
 
 # Step 5: wait for online (max ~15s)
 STATUS=""
