@@ -206,6 +206,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ engine }),
     }),
+  stepCleanup: () => request<{ seconds: number }>('/step-cleanup'),
+  setStepCleanup: (seconds: number) =>
+    request<{ ok: true; seconds: number }>('/step-cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
   persona: () => request<PersonaInfo>('/persona'),
   setPersona: (persona: string) =>
     request<{ ok: true; persona: string; custom: boolean }>('/persona', {

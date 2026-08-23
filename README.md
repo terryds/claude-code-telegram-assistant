@@ -364,7 +364,11 @@ script is in use.
 
 ### Interrupting a run
 
-The agent streams its progress (thinking, tool calls, results) back to the chat as it works, and the listener keeps receiving messages the whole time. To interrupt:
+The agent streams its progress (thinking, tool calls, results) back to the chat as it works, and the listener keeps receiving messages the whole time.
+
+By default these tool-step messages are removed from the chat 1 minute after they were sent, so the conversation stays readable — only the final reply remains. The **Step messages** setting on the dashboard changes the delay (30 sec / 1 min / 5 min / 15 min) or turns removal off ("Never"); other durations up to 48 h can be set via `POST /api/step-cleanup`. Removal is best-effort and DB-backed: pending deletions survive a relay restart, and Telegram itself refuses to delete messages older than 48 hours.
+
+To interrupt:
 
 - Send `/stop` to cancel the current run of *that conversation* and leave things idle (a run started from the group topic keeps going).
 - Send a new prompt while the agent is still working — it auto-stops that conversation's running task and starts the new one (auto-stop & replace).

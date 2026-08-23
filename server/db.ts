@@ -49,6 +49,21 @@ db.run(`
 
 db.run('CREATE INDEX IF NOT EXISTS idx_step_log_created_at ON step_log(created_at DESC)');
 
+// Tool-step messages sent to Telegram that are scheduled for auto-removal
+// (the "Tool-step cleanup" setting). A background sweeper deletes each
+// Telegram message once it is older than the configured TTL, then drops the
+// row. DB-backed (not setTimeout) so pending deletions survive relay restarts.
+db.run(`
+  CREATE TABLE IF NOT EXISTS step_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    sent_at INTEGER NOT NULL
+  )
+`);
+
+db.run('CREATE INDEX IF NOT EXISTS idx_step_messages_sent_at ON step_messages(sent_at)');
+
 // Linked group chats/topics the relay answers in (besides the private chat).
 // topic_id NULL = the whole group; otherwise one forum topic.
 db.run(`
@@ -128,6 +143,37 @@ export function setSetting(key: string, value: string): void {
 
 export function deleteSetting(key: string): void {
   db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+export type StepMessage = {
+  id: number;
+  chat_id: string;
+  message_id: number;
+  sent_at: number;
+};
+
+export function recordStepMessage(chatId: string, messageId: number): void {
+  db.prepare('INSERT INTO step_messages (chat_id, message_id, sent_at) VALUES (?, ?, ?)').run(
+    chatId,
+    messageId,
+    Date.now()
+  );
+}
+
+/** Pop every queued step message sent before `cutoff` (claimed atomically). */
+export const takeExpiredStepMessages = db.transaction((cutoff: number): StepMessage[] => {
+  const rows = db
+    .prepare('SELECT * FROM step_messages WHERE sent_at < ? ORDER BY id')
+    .all(cutoff) as StepMessage[];
+  if (rows.length > 0) {
+    db.prepare('DELETE FROM step_messages WHERE sent_at < ?').run(cutoff);
+  }
+  return rows;
+});
+
+/** Forget all queued deletions — the messages stay in the chat forever. */
+export function clearStepMessageQueue(): void {
+  db.prepare('DELETE FROM step_messages').run();
 }
 
 export type Bookmark = {

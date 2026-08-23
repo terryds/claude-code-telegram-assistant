@@ -254,7 +254,7 @@ export async function sendOnboardingDone(): Promise<void> {
 export async function sendTelegram(
   text: string,
   options: { html?: boolean; target?: SendTarget; replyMarkup?: object } = {}
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; chatId?: string; messageId?: number }> {
   const { botToken, chatId } = getTelegramConfig();
   const target = options.target ?? (chatId ? { chatId } : null);
   if (!botToken || !target) return { ok: false, error: 'Telegram not configured' };
@@ -271,6 +271,36 @@ export async function sendTelegram(
         ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
         disable_web_page_preview: true,
       }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { ok: false, error: `Telegram ${res.status}: ${body}` };
+    }
+    const data = (await res.json().catch(() => null)) as {
+      result?: { message_id?: number };
+    } | null;
+    return { ok: true, chatId: target.chatId, messageId: data?.result?.message_id };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Delete a message the bot sent earlier. Telegram only allows this within
+ * 48 hours of sending; a failure (too old, already deleted) is not an error
+ * worth surfacing — callers treat it as best-effort.
+ */
+export async function deleteTelegramMessage(
+  chatId: string,
+  messageId: number
+): Promise<{ ok: boolean; error?: string }> {
+  const { botToken } = getTelegramConfig();
+  if (!botToken) return { ok: false, error: 'Telegram not configured' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
     });
     if (!res.ok) {
       const body = await res.text();

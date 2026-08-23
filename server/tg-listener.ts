@@ -35,6 +35,7 @@ import {
   type EngineStep,
 } from './engine.ts';
 import { currentEngine } from './engines.ts';
+import { queueStepMessageCleanup } from './step-cleanup.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
 import { startUpdate } from './updater.ts';
@@ -308,7 +309,12 @@ async function sendStep(step: EngineStep, target: SendTarget): Promise<void> {
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
   lastStepSentAt = Date.now();
   const r = await sendTelegram(msg, { target });
-  if (!r.ok) console.error(`[tg-listener] step send failed: ${r.error}`);
+  if (!r.ok) {
+    console.error(`[tg-listener] step send failed: ${r.error}`);
+  } else if (r.chatId && r.messageId) {
+    // Auto-remove the step bubble later, per the "Tool-step cleanup" setting.
+    queueStepMessageCleanup(r.chatId, r.messageId);
+  }
 }
 
 // ── Active run tracking ─────────────────────────────────────────────

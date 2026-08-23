@@ -255,6 +255,13 @@ export function Dashboard({ status, onChange }: Props) {
 
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Step messages
+        </h2>
+        <StepCleanupCard />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Group topics
         </h2>
         <GroupTopicCard
@@ -413,6 +420,95 @@ function PersonaCard() {
           Saving stops in-flight runs and starts fresh conversations.
         </span>
       </div>
+    </div>
+  );
+}
+
+const STEP_CLEANUP_OPTIONS: Array<{ seconds: number; label: string }> = [
+  { seconds: 0, label: 'Never' },
+  { seconds: 30, label: '30 sec' },
+  { seconds: 60, label: '1 min' },
+  { seconds: 300, label: '5 min' },
+  { seconds: 900, label: '15 min' },
+];
+
+function StepCleanupCard() {
+  const [seconds, setSeconds] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .stepCleanup()
+      .then((r) => setSeconds(r.seconds))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const save = async (value: number) => {
+    const prev = seconds;
+    setSeconds(value);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await api.setStepCleanup(value);
+      setSeconds(r.seconds);
+      setNotice(
+        value === 0
+          ? 'Saved — tool-step messages now stay in the chat.'
+          : 'Saved — applies to new tool-step messages and any still pending removal.'
+      );
+    } catch (e) {
+      setSeconds(prev);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (seconds === null) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm text-zinc-500">
+        {error ?? 'Loading…'}
+      </div>
+    );
+  }
+
+  // A value set outside the presets (e.g. via the API) still needs to render.
+  const options = STEP_CLEANUP_OPTIONS.some((o) => o.seconds === seconds)
+    ? STEP_CLEANUP_OPTIONS
+    : [...STEP_CLEANUP_OPTIONS, { seconds, label: `${seconds} sec` }];
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-3 text-sm">
+      <p className="text-zinc-400">
+        Intermediate progress messages streamed to Telegram during a run (🧠 thinking,
+        🛠 tool calls, ✅ results) are deleted after this delay to cut the noise. The
+        final reply always stays.
+      </p>
+      <div className="flex items-center gap-3">
+        <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+          {options.map((o) => (
+            <button
+              key={o.seconds}
+              onClick={() => save(o.seconds)}
+              disabled={busy}
+              className={[
+                'px-4 py-1.5 transition-colors disabled:opacity-50',
+                seconds === o.seconds
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
+              ].join(' ')}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {busy && <span className="text-zinc-500 text-xs">Saving…</span>}
+      </div>
+      {error && <p className="text-red-300 text-xs">{error}</p>}
+      {notice && <p className="text-emerald-300 text-xs">{notice}</p>}
     </div>
   );
 }

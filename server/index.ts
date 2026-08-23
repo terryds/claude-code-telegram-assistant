@@ -85,6 +85,12 @@ import {
   skipBacklog,
 } from './tg-listener.ts';
 import { setDashboardPort } from './dashboard-url.ts';
+import {
+  getStepCleanupSeconds,
+  setStepCleanupSeconds,
+  startStepCleanupSweeper,
+  MAX_STEP_CLEANUP_SECONDS,
+} from './step-cleanup.ts';
 
 // Default to 8000 (exe.dev's default port); fall back to 3000 if it's taken.
 // An explicit PORT env var always wins and is used as-is (no fallback).
@@ -375,6 +381,20 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     clearAllSessions();
     setPersona(body.persona ?? '');
     return json({ ok: true, persona: getPersona(), custom: isCustomPersona() });
+  }
+
+  if (p === '/step-cleanup' && m === 'GET') {
+    return json({ seconds: getStepCleanupSeconds() });
+  }
+
+  if (p === '/step-cleanup' && m === 'POST') {
+    const body = await readBody<{ seconds?: number }>(req);
+    const n = body.seconds;
+    if (!Number.isInteger(n) || (n as number) < 0 || (n as number) > MAX_STEP_CLEANUP_SECONDS) {
+      return err(400, `seconds must be an integer between 0 (never) and ${MAX_STEP_CLEANUP_SECONDS}`);
+    }
+    setStepCleanupSeconds(n as number);
+    return json({ ok: true, seconds: getStepCleanupSeconds() });
   }
 
   if (p === '/onboarding/save-token' && m === 'POST') {
@@ -723,6 +743,7 @@ function serveStatic(url: URL): Response {
 
 startListener();
 startJobScheduler();
+startStepCleanupSweeper();
 
 // Refresh the Telegram command menu on boot so deploys pick up command changes.
 // (Otherwise setMyCommands only runs when the relay is toggled on, leaving the
