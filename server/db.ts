@@ -98,6 +98,21 @@ db.run(`
   )
 `);
 
+// Out-of-band notifications already delivered to the user's Telegram while the
+// agent was idle — /api/notify calls, scheduled-job output, bin/notify.
+// Drained into the next agent turn's prompt so the agent knows what the user
+// has seen (README: "Notification gateway").
+db.run(`
+  CREATE TABLE IF NOT EXISTS pending_context (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT,
+    text TEXT NOT NULL,
+    session_key TEXT NOT NULL DEFAULT 'claude_session_id'
+  )
+`);
+
 export function getSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
     | { value: string }
@@ -243,6 +258,66 @@ export function recordJobRun(
      WHERE id = ?`
   ).run(Date.now(), result.exit_code, result.output, failures, id);
   return getJob(id);
+}
+
+export type PendingContextRow = {
+  id: number;
+  created_at: number;
+  source: string;
+  /** What kind of alert this is (e.g. "draft digest", "trending alert"). */
+  kind: string | null;
+  text: string;
+  session_key: string;
+};
+
+const PENDING_CONTEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const PENDING_CONTEXT_MAX_ITEMS = 20;
+/** Per-item cap — the full message went to Telegram; the agent only needs a summary. */
+const PENDING_CONTEXT_MAX_TEXT = 1500;
+
+export function addPendingContext(entry: {
+  source: string;
+  kind?: string | null;
+  text: string;
+  sessionKey?: string;
+}): void {
+  db.prepare(
+    'INSERT INTO pending_context (created_at, source, kind, text, session_key) VALUES (?, ?, ?, ?, ?)'
+  ).run(
+    Date.now(),
+    entry.source,
+    entry.kind?.slice(0, 60) ?? null,
+    entry.text.slice(0, PENDING_CONTEXT_MAX_TEXT),
+    entry.sessionKey ?? 'claude_session_id'
+  );
+}
+
+/**
+ * Consume everything queued for one conversation. Stale rows (any key) are
+ * dropped, the newest PENDING_CONTEXT_MAX_ITEMS come back for the prompt
+ * preamble, older ones are only counted. The key's rows are deleted either
+ * way — context is injected at most once, even if the run is later aborted
+ * (the user saw the alert on Telegram regardless).
+ */
+export function drainPendingContext(sessionKey: string): {
+  items: PendingContextRow[];
+  omitted: number;
+} {
+  const drain = db.transaction((key: string) => {
+    db.prepare('DELETE FROM pending_context WHERE created_at < ?').run(
+      Date.now() - PENDING_CONTEXT_MAX_AGE_MS
+    );
+    const rows = db
+      .prepare(
+        'SELECT * FROM pending_context WHERE session_key = ? ORDER BY created_at ASC, id ASC'
+      )
+      .all(key) as PendingContextRow[];
+    if (rows.length === 0) return { items: [] as PendingContextRow[], omitted: 0 };
+    db.prepare('DELETE FROM pending_context WHERE session_key = ?').run(key);
+    const omitted = Math.max(0, rows.length - PENDING_CONTEXT_MAX_ITEMS);
+    return { items: rows.slice(omitted), omitted };
+  });
+  return drain(sessionKey);
 }
 
 export type MessageLogEntry = {

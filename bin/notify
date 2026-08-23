@@ -19,7 +19,16 @@
 #                   for arbitrary/piped output, which HTML mode would reject)
 #   --dry-run       print the request bodies instead of sending
 #
-# Env: RELAY_DB overrides the settings DB path.
+# Delivery path: sends addressed to the default linked chat are routed through
+# the relay's POST /api/notify when the relay is up — that logs the message to
+# the dashboard feed and queues it as context for the agent's next turn. When
+# the relay is down (or the send targets --chat/--thread), falls back to the
+# direct Telegram API and best-effort records the same bookkeeping straight
+# into the DB.
+#
+# Env: RELAY_DB overrides the settings DB path; RELAY_URL overrides the relay
+# base URL (default: tries http://127.0.0.1:$PORT, then :8000, then :3000);
+# NOTIFY_TOKEN is forwarded as X-Notify-Token if the relay requires one.
 
 set -uo pipefail
 
@@ -27,6 +36,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
 
 CHAT_ID=""
+CHAT_OVERRIDE=0
 THREAD_ID=""
 HTML=0
 MD=0
@@ -35,7 +45,7 @@ MSG_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --chat)    CHAT_ID="${2:?--chat needs a value}"; shift 2 ;;
+    --chat)    CHAT_ID="${2:?--chat needs a value}"; CHAT_OVERRIDE=1; shift 2 ;;
     --thread)  THREAD_ID="${2:?--thread needs a value}"; shift 2 ;;
     --md)      MD=1; shift ;;
     --html)    HTML=1; shift ;;
@@ -60,6 +70,68 @@ fi
 # not ${MSG//…/} substitution: the latter is quadratic in bash and hangs for
 # minutes on large piped input.)
 if [[ "$MSG" != *[![:space:]]* ]]; then
+  exit 0
+fi
+
+# The md loop below consumes $MSG chunk by chunk; keep the original for the
+# direct-path bookkeeping.
+ORIG_MSG="$MSG"
+# Default-chat sends get relay routing + agent-context bookkeeping; targeted
+# sends (--chat/--thread) go direct and stay out of the private conversation's
+# context queue.
+DEFAULT_CHAT=1
+if [ "$CHAT_OVERRIDE" = 1 ] || [ -n "$THREAD_ID" ]; then
+  DEFAULT_CHAT=0
+fi
+
+# Try the relay's /api/notify; 0 = accepted (message delivered + logged +
+# queued as agent context — nothing left to do).
+relay_send() {
+  [ "$DEFAULT_CHAT" = 1 ] || return 1
+  [ "$DRY_RUN" = 0 ] || return 1
+  local fmt="plain"
+  [ "$HTML" = 1 ] && fmt="html"
+  [ "$MD" = 1 ] && fmt="md"
+  local body base code
+  body="$(jq -n --arg t "$ORIG_MSG" --arg f "$fmt" \
+    '{text: $t, format: $f, source: "notify"}')"
+  for base in ${RELAY_URL:-} ${PORT:+http://127.0.0.1:$PORT} \
+              http://127.0.0.1:8000 http://127.0.0.1:3000; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$base/api/notify" \
+      -H 'Content-Type: application/json' \
+      ${NOTIFY_TOKEN:+-H "X-Notify-Token: $NOTIFY_TOKEN"} \
+      -d "$body" 2>/dev/null)"
+    [ "$code" = "200" ] && return 0
+  done
+  return 1
+}
+
+# Direct-path bookkeeping: the relay wasn't involved, so record the message in
+# its DB ourselves — a dashboard-feed row plus context for the agent's next
+# turn. Best-effort: never fails the send.
+record_direct() {
+  [ "$DEFAULT_CHAT" = 1 ] || return 0
+  [ "$DRY_RUN" = 0 ] || return 0
+  local now esc
+  now="$(($(date +%s) * 1000))"
+  esc="${ORIG_MSG//\'/\'\'}"
+  sqlite3 "$DB" "
+    CREATE TABLE IF NOT EXISTS pending_context (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      kind TEXT,
+      text TEXT NOT NULL,
+      session_key TEXT NOT NULL DEFAULT 'claude_session_id'
+    );
+    INSERT INTO message_log (created_at, direction, text, session_id, ok, error)
+      VALUES ($now, 'out', '[notify] ' || '$esc', NULL, 1, NULL);
+    INSERT INTO pending_context (created_at, source, text)
+      VALUES ($now, 'notify', substr('$esc', 1, 1500));
+  " 2>/dev/null || true
+}
+
+if relay_send; then
   exit 0
 fi
 
@@ -131,3 +203,5 @@ if [ "$MD" = 1 ]; then
 else
   send_plain "$MSG"
 fi
+
+record_direct

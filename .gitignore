@@ -8,3 +8,4 @@ data/incoming/
 data/jobs/
 .DS_Store
 *.log
+docs/contentideas-integration*

@@ -383,6 +383,38 @@ Videos, round video notes, animations, and `video/*` documents work just like ph
 
 Any other document (`.csv`, `.md`, `.txt`, `.pdf`, spreadsheets, code, archives, …) works the same way: it's downloaded to `data/incoming/<file_unique_id>-<original name>` (the original filename is kept, sanitized) and the local path — plus the original name and MIME type — is appended to the prompt. Text files and PDFs are readable directly with Claude's `Read` tool; other formats are left to the agent's own tools. With no caption the agent is asked to summarize the file. The same 20 MB Telegram bot download limit applies.
 
+## Notification gateway (`POST /api/notify`)
+
+Other apps on the same host can push Telegram alerts through the relay
+instead of carrying their own bot credentials:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "<b>2 drafts ready</b>", "format": "html", "source": "myapp",
+       "kind": "draft digest", "context": "2 drafts ready: …"}'
+```
+
+- `text` (required) — the message; `source` (required) — who sent it, labels
+  it in the dashboard feed (`[myapp] …`).
+- `kind` (optional) — what kind of alert it is (e.g. `"draft digest"`,
+  `"deploy status"`); shown alongside the source in the feed and in the
+  agent's FYI list, so the agent knows who triggered the alert *and* what
+  it's about.
+- `format` — `"html"` (Telegram-HTML, default), `"plain"`, or `"md"`
+  (GitHub-Flavored Markdown rich message).
+- `context` (optional) — plain-text summary queued for the agent: the next
+  relayed turn's prompt starts with an FYI list of notifications delivered
+  while the agent was idle, so replies that reference an alert ("expand the
+  second draft") resolve. Defaults to `text` with HTML stripped; pass
+  `"no_context": true` for pure-noise pings (tests). Scheduled-job output and
+  `bin/notify` sends are queued the same way.
+- Returns non-2xx when the Telegram send fails, so callers can retry.
+
+The endpoint only accepts loopback connections. To also require a shared
+secret (checked as the `X-Notify-Token` header), set a `notify_token` row in
+the settings table.
+
 ## Data
 
 Everything is stored in `data/app.db` (SQLite). Two tables:

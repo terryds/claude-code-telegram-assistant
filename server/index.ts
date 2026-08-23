@@ -17,6 +17,8 @@ import {
   addJob,
   updateJob,
   deleteJob,
+  logMessage,
+  addPendingContext,
 } from './db.ts';
 import {
   startJobScheduler,
@@ -27,7 +29,14 @@ import {
   isJobRunning,
 } from './jobs.ts';
 import { fetchBookmarkMeta } from './bookmark-meta.ts';
-import { getBotInfo, getRecentChats, getTelegramConfig } from './telegram.ts';
+import {
+  getBotInfo,
+  getRecentChats,
+  getTelegramConfig,
+  sendTelegram,
+  sendTelegramPlain,
+  sendTelegramRich,
+} from './telegram.ts';
 import {
   ENGINE_IDS,
   ENGINE_LABELS,
@@ -138,9 +147,86 @@ function normalizedUrlChanged(input: string, current: string): boolean {
   return strip(input) !== strip(current);
 }
 
-async function handleApi(req: Request, url: URL): Promise<Response> {
+/** Rough plain-text rendering of a Telegram-HTML message, for agent context. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+/** The slice of Bun.Server the API needs (the full type is generic across bun-types versions). */
+type RequestIPServer = { requestIP(req: Request): { address: string } | null };
+
+async function handleApi(req: Request, url: URL, server?: RequestIPServer): Promise<Response> {
   const p = url.pathname.replace(/^\/api/, '') || '/';
   const m = req.method;
+
+  // Notification gateway for other services on this host: deliver to the
+  // linked private chat, record in the dashboard feed, and queue a plain-text
+  // summary the agent sees on its next turn. Loopback-only; contract in the
+  // README ("Notification gateway").
+  if (p === '/notify' && m === 'POST') {
+    const ip = server?.requestIP(req)?.address;
+    if (ip && ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+      return err(401, 'notify is loopback-only');
+    }
+    const requiredToken = getSetting('notify_token');
+    if (requiredToken && req.headers.get('x-notify-token') !== requiredToken) {
+      return err(401, 'bad or missing X-Notify-Token header');
+    }
+    const body = await readBody<{
+      text?: unknown;
+      format?: unknown;
+      source?: unknown;
+      kind?: unknown;
+      context?: unknown;
+      no_context?: unknown;
+      mode?: unknown;
+    }>(req);
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    const source = typeof body.source === 'string' ? body.source.trim() : '';
+    const kind = typeof body.kind === 'string' && body.kind.trim() ? body.kind.trim() : null;
+    if (!text) return err(400, 'text is required');
+    if (!source) return err(400, 'source is required');
+    if (body.mode !== undefined && body.mode !== 'deliver') {
+      return err(400, 'unsupported mode — only "deliver" exists ("agent" is reserved)');
+    }
+    const format = body.format === undefined ? 'html' : body.format;
+    if (format !== 'html' && format !== 'plain' && format !== 'md') {
+      return err(400, 'format must be "html", "plain", or "md"');
+    }
+    if (!isOnboarded()) return err(503, 'relay not linked to a Telegram chat yet');
+
+    const r =
+      format === 'md'
+        ? await sendTelegramRich(text)
+        : format === 'plain'
+          ? await sendTelegramPlain(text)
+          : await sendTelegram(text);
+    logMessage({
+      direction: 'out',
+      text: `[${source}${kind ? ` · ${kind}` : ''}] ${text}`,
+      session_id: null,
+      ok: r.ok,
+      error: r.ok ? null : (r.error ?? null),
+    });
+    // Non-2xx on failure so callers with retry semantics (contentideas stamps
+    // notified_at only after a successful send) retry on their next run.
+    if (!r.ok) return err(502, r.error ?? 'Telegram send failed');
+    if (body.no_context !== true) {
+      const context =
+        typeof body.context === 'string' && body.context.trim()
+          ? body.context.trim()
+          : stripHtml(text);
+      if (context) addPendingContext({ source, kind, text: context });
+    }
+    return json({ ok: true });
+  }
 
   if (p === '/status' && m === 'GET') {
     const cfg = getTelegramConfig();
@@ -643,11 +729,11 @@ startJobScheduler();
 // menu stale across restarts.)
 if (isRelayEnabled()) applyBotCommands().catch(() => {});
 
-const fetchHandler = async (req: Request) => {
+const fetchHandler = async (req: Request, server?: RequestIPServer) => {
   const url = new URL(req.url);
   if (url.pathname.startsWith('/api')) {
     try {
-      return await handleApi(req, url);
+      return await handleApi(req, url, server);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('[api] error:', msg);
