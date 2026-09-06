@@ -5,7 +5,7 @@
  * Claude Code skills live in `.claude/skills/<name>/SKILL.md` (project and
  * personal dirs) plus installed plugins.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { EngineId } from './engine.ts';
@@ -13,8 +13,10 @@ import type { EngineId } from './engine.ts';
 export type SkillInfo = {
   name: string;
   description: string;
-  /** Where the skill was found: 'project' | 'personal' | 'plugin' | 'prompt' */
+  /** Where the skill was found: 'project' | 'personal' | 'plugin' */
   source: string;
+  /** For plugin skills, the plugin's short name (e.g. "posthog"). */
+  plugin?: string;
 };
 
 /** Pull `name:` and `description:` out of a SKILL.md YAML frontmatter block. */
@@ -27,10 +29,23 @@ function parseSkillMd(path: string, fallbackName: string): SkillInfo | null {
   }
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   const fm = m ? m[1] : '';
+  // Handles plain scalars, quoted strings, and `>`/`|` block scalars (whose
+  // text is on the following indented lines) — enough for SKILL.md files.
   const field = (key: string): string => {
-    const fmatch = fm.match(new RegExp(`^${key}:[ \\t]*(.+)$`, 'm'));
+    const fmatch = fm.match(new RegExp(`^${key}:[ \\t]*(.*)$`, 'm'));
     if (!fmatch) return '';
-    return fmatch[1].trim().replace(/^["']|["']$/g, '');
+    const inline = fmatch[1].trim();
+    if (/^[>|][-+]?$/.test(inline)) {
+      const after = fm.slice((fmatch.index ?? 0) + fmatch[0].length).split('\n');
+      const block: string[] = [];
+      for (const line of after) {
+        if (line.trim() === '') { if (block.length) break; else continue; }
+        if (!/^[ \t]/.test(line)) break;
+        block.push(line.trim());
+      }
+      return block.join(inline.startsWith('>') ? ' ' : '\n').trim();
+    }
+    return inline.replace(/^["']|["']$/g, '');
   };
   return {
     name: field('name') || fallbackName,
@@ -58,30 +73,26 @@ function scanSkillDir(dir: string, source: string): SkillInfo[] {
   return out;
 }
 
-/** Bounded walk under ~/.claude/plugins looking for `skills/<name>/SKILL.md`. */
-function scanPluginSkills(root: string, depth = 0): SkillInfo[] {
-  if (depth > 5 || !existsSync(root)) return [];
-  const out: SkillInfo[] = [];
-  let entries: string[];
+/**
+ * Skills shipped by installed plugins. Reads `installed_plugins.json` and
+ * scans each plugin's `skills/` dir — deliberately NOT a blind walk of
+ * `~/.claude/plugins`, which also holds marketplace clones (skills of plugins
+ * you never installed) and cached older versions.
+ */
+function scanInstalledPluginSkills(pluginsRoot: string): SkillInfo[] {
+  let installed: { plugins?: Record<string, Array<{ installPath?: string }>> } | null = null;
   try {
-    entries = readdirSync(root);
+    installed = JSON.parse(readFileSync(join(pluginsRoot, 'installed_plugins.json'), 'utf8'));
   } catch {
     return [];
   }
-  for (const entry of entries) {
-    if (entry.startsWith('.')) continue;
-    const full = join(root, entry);
-    let isDir = false;
-    try {
-      isDir = statSync(full).isDirectory();
-    } catch {
-      continue;
-    }
-    if (!isDir) continue;
-    if (entry === 'skills') {
-      out.push(...scanSkillDir(full, 'plugin'));
-    } else {
-      out.push(...scanPluginSkills(full, depth + 1));
+  const out: SkillInfo[] = [];
+  for (const [id, installs] of Object.entries(installed?.plugins ?? {})) {
+    const dir = installs?.[0]?.installPath;
+    if (!dir) continue;
+    const plugin = id.split('@')[0];
+    for (const skill of scanSkillDir(join(dir, 'skills'), 'plugin')) {
+      out.push({ ...skill, plugin });
     }
   }
   return out;
@@ -102,6 +113,6 @@ export function listSkills(engine: EngineId): SkillInfo[] {
   return dedupe([
     ...scanSkillDir(join(process.cwd(), '.claude', 'skills'), 'project'),
     ...scanSkillDir(join(home, '.claude', 'skills'), 'personal'),
-    ...scanPluginSkills(join(home, '.claude', 'plugins')),
+    ...scanInstalledPluginSkills(join(home, '.claude', 'plugins')),
   ]);
 }

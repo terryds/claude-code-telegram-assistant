@@ -62,6 +62,48 @@ export type Status = {
   auth: AuthConfig;
 };
 
+export type SkillInfo = {
+  name: string;
+  description: string;
+  /** 'project' | 'personal' | 'plugin' */
+  source: string;
+  /** For plugin skills, the plugin's short name. */
+  plugin?: string;
+};
+
+export type McpStatus = 'connected' | 'needs_auth' | 'failed' | 'pending' | 'unknown';
+export type McpServer = {
+  name: string;
+  target: string;
+  transport: string | null;
+  status: McpStatus;
+  statusText: string;
+};
+export type McpSnapshot = { servers: McpServer[]; checked_at: number; error?: string };
+
+export type PluginInfo = {
+  id: string;
+  name: string;
+  marketplace: string;
+  version: string;
+  scope: string;
+  enabled: boolean;
+  installedAt: string | null;
+  lastUpdated: string | null;
+  description: string | null;
+  skills: number;
+  agents: number;
+  commands: number;
+  hasMcp: boolean;
+  hasHooks: boolean;
+};
+
+export type Capabilities = {
+  skills: SkillInfo[];
+  plugins: PluginInfo[];
+  mcp: McpSnapshot | null;
+};
+
 export type QrPairing = {
   pairing_id: string;
   suggested_username: string;
@@ -198,6 +240,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ engine }),
     }),
+  capabilities: () => request<Capabilities>('/capabilities'),
+  refreshMcp: () => request<McpSnapshot>('/capabilities/mcp/refresh', { method: 'POST' }),
   stepCleanup: () => request<{ seconds: number }>('/step-cleanup'),
   setStepCleanup: (seconds: number) =>
     request<{ ok: true; seconds: number }>('/step-cleanup', {

@@ -60,6 +60,8 @@ import {
   claudeLoginStatus,
 } from './claude-login.ts';
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
+import { getCachedMcp, refreshMcp, listPlugins } from './capabilities.ts';
+import { listSkills } from './skills.ts';
 import {
   startQrPairing,
   pollQrPairing,
@@ -342,6 +344,21 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     clearAllSessions();
     setEngineId(id);
     return json({ ok: true, engine: id });
+  }
+
+  // Read-only inventory for the Capabilities page. Skills and plugins are
+  // cheap filesystem scans; the MCP list is served from cache (a live check
+  // takes seconds) — POST /capabilities/mcp/refresh re-runs it.
+  if (p === '/capabilities' && m === 'GET') {
+    return json({
+      skills: listSkills(getEngineId()),
+      plugins: listPlugins(),
+      mcp: getCachedMcp(),
+    });
+  }
+
+  if (p === '/capabilities/mcp/refresh' && m === 'POST') {
+    return json(await refreshMcp());
   }
 
   if (p === '/persona' && m === 'GET') {

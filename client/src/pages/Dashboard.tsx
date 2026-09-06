@@ -13,6 +13,7 @@ import {
   type UpdateInfo,
 } from '../api';
 import { AgentAuth } from '../components/AgentAuth';
+import { Nav } from '../components/Nav';
 
 type Props = { status: Status; onChange: () => void };
 
@@ -108,6 +109,7 @@ export function Dashboard({ status, onChange }: Props) {
 
   return (
     <div className="min-h-full max-w-4xl mx-auto px-6 py-10 space-y-8">
+      <Nav />
       <header className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Dashboard</h1>
