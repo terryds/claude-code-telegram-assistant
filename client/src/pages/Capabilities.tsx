@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   api,
   type Capabilities as CapabilitiesData,
@@ -94,18 +94,57 @@ export function Capabilities() {
 
 // ── How to add more ─────────────────────────────────────────────────
 
+/** An example Telegram message, styled like a chat bubble. Tap to copy. */
 function Prompt({ children }: { children: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(children).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
   return (
-    <div className="flex items-start gap-2 mt-1.5">
-      <span className="text-zinc-600 select-none">›</span>
-      <code className="text-zinc-200 text-xs leading-relaxed">“{children}”</code>
-      <button
-        onClick={() => navigator.clipboard?.writeText(children)}
-        className="ml-auto shrink-0 text-[11px] text-zinc-500 hover:text-zinc-300"
-        title="Copy prompt"
-      >
-        copy
-      </button>
+    <button
+      onClick={copy}
+      title="Copy this message"
+      className="group flex w-full items-center gap-3 text-left rounded-xl border border-zinc-800 bg-zinc-900 hover:border-zinc-700 hover:bg-zinc-800/80 px-4 py-2.5 transition-colors"
+    >
+      <span className="text-zinc-100 text-sm leading-snug">{children}</span>
+      <span className="ml-auto shrink-0 text-xs text-zinc-500 group-hover:text-zinc-300">
+        {copied ? 'Copied ✓' : 'Copy'}
+      </span>
+    </button>
+  );
+}
+
+function Method({
+  n,
+  title,
+  children,
+  prompts,
+}: {
+  n: number;
+  title: string;
+  children: ReactNode;
+  prompts?: string[];
+}) {
+  return (
+    <div className="flex gap-4">
+      <div className="shrink-0 w-7 h-7 rounded-full bg-zinc-800 text-zinc-300 text-xs font-medium flex items-center justify-center mt-0.5">
+        {n}
+      </div>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="text-zinc-100 font-medium">{title}</div>
+        <p className="text-zinc-400 text-sm leading-relaxed">{children}</p>
+        {prompts && prompts.length > 0 && (
+          <div className="space-y-1.5 pt-1">
+            <div className="text-[11px] uppercase tracking-wide text-zinc-500">Say in Telegram</div>
+            {prompts.map((p) => (
+              <Prompt key={p}>{p}</Prompt>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -113,73 +152,82 @@ function Prompt({ children }: { children: string }) {
 function HowToAdd({ required }: { required: CapabilitiesData['required_skills'] }) {
   const missing = required.filter((r) => !r.installed);
   return (
-    <section className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-4 text-sm">
-      <h2 className="font-medium text-zinc-100">How to add more — no SSH needed</h2>
+    <section className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-5">
+      <div>
+        <h2 className="font-medium text-zinc-100">How to add more</h2>
+        <p className="text-zinc-400 text-sm mt-1">
+          No SSH needed — everything below is done by messaging Claude in Telegram. Tap an
+          example to copy it.
+        </p>
+      </div>
 
       {missing.length > 0 && (
-        <div className="rounded border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-          Missing required skill{missing.length > 1 ? 's' : ''}:{' '}
-          {missing.map((m) => (
-            <code key={m.name} className="text-amber-100 mr-1">
-              {m.name}
-            </code>
-          ))}
-          — without it Claude can't finish sign-ins from Telegram. On the host run{' '}
-          <code className="text-amber-100">bin/install</code>, or ask in Telegram:
+        <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 px-4 py-3 text-sm text-amber-200 space-y-2">
+          <div>
+            Missing required skill{missing.length > 1 ? 's' : ''}:{' '}
+            {missing.map((m) => (
+              <code key={m.name} className="text-amber-100 mr-1">
+                {m.name}
+              </code>
+            ))}
+            — without it Claude can't finish sign-ins from Telegram. Run{' '}
+            <code className="text-amber-100">bin/install</code> on the host, or ask:
+          </div>
           <Prompt>Install the pty-oauth-login skill from terryds/skills</Prompt>
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <div>
-          <div className="text-zinc-200 font-medium">Connectors on your Claude account</div>
-          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
-            Google Drive, Gmail, Notion, Canva… connect them once in Claude Desktop or
-            claude.ai under <span className="text-zinc-300">Settings → Connectors</span>. They
-            follow your account, so every Claude Code signed in as you — including this host —
-            gets them automatically. They show up above as{' '}
-            <code className="text-zinc-300">claude.ai …</code>. Nothing to do here.
-          </p>
-        </div>
-        <div>
-          <div className="text-zinc-200 font-medium">MCP servers on this machine</div>
-          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
-            Ask Claude in Telegram. It adds the server, sends you the sign-in link, you open it
-            on your phone and paste back the code or the redirect URL it lands on (a{' '}
-            <code className="text-zinc-300">localhost</code> one is fine) — Claude finishes the
-            login for you.
-          </p>
-          <Prompt>Add the Notion MCP server at https://mcp.notion.com/mcp and sign me in</Prompt>
-          <Prompt>Sign in to the posthog MCP server</Prompt>
-        </div>
-        <div>
-          <div className="text-zinc-200 font-medium">Skills</div>
-          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
-            Any skill on GitHub or{' '}
-            <a
-              className="underline hover:text-zinc-200"
-              href="https://skills.sh"
-              target="_blank"
-              rel="noreferrer"
-            >
-              skills.sh
-            </a>{' '}
-            — Claude installs it with the skills.sh CLI into{' '}
-            <code className="text-zinc-300">~/.claude/skills</code>.
-          </p>
-          <Prompt>Install the frontend-design skill from anthropics/skills</Prompt>
-        </div>
-        <div>
-          <div className="text-zinc-200 font-medium">Plugins</div>
-          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
-            Bundles of skills, agents and MCP servers from a marketplace.
-          </p>
-          <Prompt>Install the posthog plugin from the official Claude plugin marketplace</Prompt>
-        </div>
+      <div className="space-y-5 divide-y divide-zinc-800 [&>*+*]:pt-5">
+        <Method n={1} title="Connectors on your Claude account">
+          Google Drive, Gmail, Notion, Canva and the like are connected once in Claude Desktop or
+          claude.ai under <span className="text-zinc-200">Settings → Connectors</span>. They follow
+          your account, so this host gets them automatically — they're the{' '}
+          <code className="text-zinc-300">claude.ai …</code> entries below. Nothing to do here.
+        </Method>
+
+        <Method
+          n={2}
+          title="MCP servers on this machine"
+          prompts={[
+            'Add the Notion MCP server at https://mcp.notion.com/mcp and sign me in',
+            'Sign in to the posthog MCP server',
+          ]}
+        >
+          Claude adds the server and sends you a sign-in link. Open it on your phone and approve.
+          The page then tries to load a <code className="text-zinc-300">localhost</code> address and
+          fails — that's expected. Copy that URL from the address bar, send it back, and Claude
+          finishes the login.
+        </Method>
+
+        <Method
+          n={3}
+          title="Skills"
+          prompts={['Install the frontend-design skill from anthropics/skills']}
+        >
+          Any skill on GitHub or{' '}
+          <a
+            className="underline hover:text-zinc-200"
+            href="https://skills.sh"
+            target="_blank"
+            rel="noreferrer"
+          >
+            skills.sh
+          </a>
+          . Claude installs it into <code className="text-zinc-300">~/.claude/skills</code>.
+        </Method>
+
+        <Method
+          n={4}
+          title="Plugins"
+          prompts={['Install the posthog plugin from the official Claude plugin marketplace']}
+        >
+          Bundles of skills, agents and MCP servers from a marketplace.
+        </Method>
       </div>
+
       <p className="text-xs text-zinc-500">
-        Changes appear here on reload; hit <span className="text-zinc-400">Refresh</span> under
-        MCP servers to re-check connections.
+        Changes show up here after a reload. Use <span className="text-zinc-400">Refresh</span>{' '}
+        under MCP servers to re-check connections.
       </p>
     </section>
   );
