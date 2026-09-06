@@ -2,7 +2,7 @@
 # safe-update-relay [delay_seconds]
 #
 # Full deploy cycle for claude-code-telegram-assistant:
-#   sleep → git pull → bun install → bun run build → pm2 restart → wait → notify
+#   sleep → git pull → bun install → required skills → bun run build → pm2 restart → wait → notify
 # Detached-safe: meant to be invoked via `setsid nohup ... &` so it survives
 # the relay process being killed by pm2 mid-flight.
 #
@@ -128,6 +128,25 @@ if [ "$NEEDS_INSTALL" = "1" ]; then
   INSTALL_OUT=$(bun install 2>&1) || fail "bun install" "$INSTALL_OUT"
 fi
 
+# Step 2b: required agent skills (REQUIRED_SKILLS in bin/_deps.sh — sourced
+# AFTER the pull so newly-added requirements are picked up). Non-fatal: a
+# missing skill degrades features (OAuth sign-ins from Telegram) but the relay
+# itself still runs, so warn in the notification instead of aborting.
+SKILLS_NOTE=""
+if [ -f "$REPO_DIR/bin/_deps.sh" ]; then
+  # shellcheck source=bin/_deps.sh
+  . "$REPO_DIR/bin/_deps.sh"
+  for s in "${REQUIRED_SKILLS[@]:-}"; do
+    [ -n "$s" ] || continue
+    have_skill "$s" && continue
+    if have npx && install_skill "$s" >/dev/null 2>&1 && have_skill "$s"; then
+      SKILLS_NOTE="$SKILLS_NOTE\n📦 Installed required skill <code>$s</code>."
+    else
+      SKILLS_NOTE="$SKILLS_NOTE\n⚠️ Required skill <code>$s</code> is missing and could not be installed — run <code>bin/install</code> on the host."
+    fi
+  done
+fi
+
 # Step 3: build client
 BUILD_OUT=$(bun run build 2>&1) || fail "bun run build" "$BUILD_OUT"
 
@@ -151,10 +170,10 @@ write_state success "done" ""
 
 # Step 6: notify success
 if [ "$OLD_SHA" = "$NEW_SHA" ]; then
-  notify "$(printf '✅ <b>Relay updated</b>\nNo new commits. Rebuilt + restarted in %sms.' "$ELAPSED_MS")"
+  notify "$(printf '✅ <b>Relay updated</b>\nNo new commits. Rebuilt + restarted in %sms.%b' "$ELAPSED_MS" "$SKILLS_NOTE")"
 else
   DEP_NOTE=""
   [ "$NEEDS_INSTALL" = "1" ] && DEP_NOTE=" (deps installed)"
-  notify "$(printf '✅ <b>Relay updated</b>\nPulled %s commit(s): <code>%s</code> → <code>%s</code>%s.\nRebuilt + restarted in %sms.' \
-    "$COMMITS" "$OLD_SHA" "$NEW_SHA" "$DEP_NOTE" "$ELAPSED_MS")"
+  notify "$(printf '✅ <b>Relay updated</b>\nPulled %s commit(s): <code>%s</code> → <code>%s</code>%s.\nRebuilt + restarted in %sms.%b' \
+    "$COMMITS" "$OLD_SHA" "$NEW_SHA" "$DEP_NOTE" "$ELAPSED_MS" "$SKILLS_NOTE")"
 fi

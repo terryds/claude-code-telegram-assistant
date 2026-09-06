@@ -60,7 +60,7 @@ import {
   claudeLoginStatus,
 } from './claude-login.ts';
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
-import { getCachedMcp, refreshMcp, listPlugins } from './capabilities.ts';
+import { getCachedMcp, refreshMcp, listPlugins, checkRequiredSkills } from './capabilities.ts';
 import { listSkills } from './skills.ts';
 import {
   startQrPairing,
@@ -354,6 +354,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
       skills: listSkills(getEngineId()),
       plugins: listPlugins(),
       mcp: getCachedMcp(),
+      required_skills: checkRequiredSkills(),
     });
   }
 

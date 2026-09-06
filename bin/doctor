@@ -31,8 +31,19 @@ for d in "${AGENT_CLIS[@]}"; do
 done
 
 echo
+echo "Agent skills (required):"
+for s in "${REQUIRED_SKILLS[@]}"; do
+  if have_skill "$s"; then
+    printf '  %s✓%s %s\n' "$C_OK" "$C_RST" "$s"
+  else
+    printf '  %s✗%s %s %smissing — %s/install installs it (npx skills add %s --skill %s -g)%s\n' "$C_BAD" "$C_RST" "$s" "$C_DIM" "$DIR" "$SKILLS_REPO" "$s" "$C_RST"
+    missing=$((missing + 1))
+  fi
+done
+
+echo
 if [ "$missing" -gt 0 ]; then
-  echo "${C_BAD}${missing} core dependency(ies) missing.${C_RST} Run: ${DIR}/install"
+  echo "${C_BAD}${missing} dependency(ies) missing.${C_RST} Run: ${DIR}/install"
 fi
 if [ "$agents" -eq 0 ]; then
   echo "${C_WARN}No coding agent CLI found.${C_RST} Install Claude Code (see hints above)."
@@ -41,5 +52,5 @@ if [ "$missing" -eq 0 ] && [ "$agents" -gt 0 ]; then
   echo "${C_OK}All set.${C_RST}"
 fi
 
-# Non-zero if anything critical is missing.
+# Non-zero if anything critical (core dep or required skill) is missing.
 [ "$missing" -eq 0 ] && [ "$agents" -gt 0 ]

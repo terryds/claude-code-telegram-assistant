@@ -138,6 +138,25 @@ export async function refreshMcp(): Promise<McpSnapshot> {
   return snap;
 }
 
+// ── Required skills ─────────────────────────────────────────────────
+
+/**
+ * Skills the relay needs the agent to have. Mirrors REQUIRED_SKILLS in
+ * bin/_deps.sh (bin/install installs them). pty-oauth-login is what lets the
+ * agent finish OAuth sign-ins for MCP servers from a Telegram chat.
+ */
+export const REQUIRED_SKILLS = ['pty-oauth-login'] as const;
+
+export type RequiredSkill = { name: string; installed: boolean };
+
+export function checkRequiredSkills(): RequiredSkill[] {
+  const home = homedir();
+  return REQUIRED_SKILLS.map((name) => ({
+    name,
+    installed: existsSync(join(home, '.claude', 'skills', name, 'SKILL.md')),
+  }));
+}
+
 // ── Plugins ─────────────────────────────────────────────────────────
 
 export type PluginInfo = {

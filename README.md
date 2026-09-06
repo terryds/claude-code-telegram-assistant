@@ -22,6 +22,10 @@ A tiny relay that forwards Telegram messages to [Claude Code](https://docs.claud
   [Authentication](#authentication)), so it only needs to be on PATH.
 - `python3` — only for Claude's in-dashboard subscription sign-in (it drives a
   PTY). `bin/install` installs it; skip if you authenticate Claude another way.
+- The [`pty-oauth-login`](https://github.com/terryds/skills/tree/main/skills/pty-oauth-login)
+  agent skill — lets Claude finish OAuth sign-ins (MCP servers etc.) from a
+  Telegram chat. `bin/install` installs it; by hand:
+  `npx skills add terryds/skills --skill pty-oauth-login -g`
 - A Telegram bot — create one with [@BotFather](https://t.me/BotFather) and
   paste the token (default), or let onboarding create one for you via a **QR
   scan** (Telegram managed bots; not supported by every Telegram app yet)
@@ -122,6 +126,28 @@ Older installs signed in via `claude setup-token`, which stored a token in
 `data/app.db` and injected it per-run. That token still works (it's injected as
 `CLAUDE_CODE_OAUTH_TOKEN` while present), and a new **Sign in with Claude**
 clears it in favor of the machine-wide login.
+
+## Adding MCP servers, connectors and skills
+
+The dashboard's **Capabilities** page lists what the host's Claude Code can
+reach — MCP servers with live health, skills, plugins. It's read-only on
+purpose: you add things by asking over Telegram, no SSH needed.
+
+- **Connectors on your Claude account** (Google Drive, Gmail, Notion, Canva…)
+  are connected once in Claude Desktop / claude.ai → Settings → Connectors and
+  follow your account, so this host gets them automatically. They appear as
+  `claude.ai …` servers.
+- **MCP servers on this machine** — ask Claude, e.g. *"Add the Notion MCP server
+  at https://mcp.notion.com/mcp and sign me in"*. Claude runs `claude mcp add`,
+  and for OAuth uses the `pty-oauth-login` skill: it drives the login under a
+  PTY, sends you the authorize link, you open it on your phone and paste back
+  the code or the redirect URL you land on (a `localhost:…` URL is expected),
+  and Claude completes the sign-in. *"Sign in to the posthog MCP server"* uses
+  the same flow for servers already configured.
+- **Skills** — *"Install the frontend-design skill from anthropics/skills"*.
+  Claude installs it via the [skills.sh](https://skills.sh) CLI into
+  `~/.claude/skills`. Plugins: *"Install the posthog plugin from the official
+  marketplace"*.
 
 ## Production build
 
@@ -288,9 +314,13 @@ When you push a new version, deploy it on the VPS with:
 cd ~/claude-code-telegram-assistant
 git pull
 bun install            # if dependencies changed
+bin/install            # picks up new requirements (e.g. required agent skills); idempotent
 bun run build          # rebuild the client
 pm2 restart claude-code-telegram-assistant
 ```
+
+`bin/safe-update-relay` (what `/update` and the dashboard's Update button run)
+does all of this for you, including installing any missing required skill.
 
 `pm2 restart` reuses the saved process config, so you don't need to repeat `pm2 save` unless you changed the start command or env vars (in which case use `pm2 restart claude-code-telegram-assistant --update-env` and re-run `pm2 save`).
 

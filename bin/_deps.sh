@@ -15,6 +15,13 @@ CORE_DEPS=(git curl bun node npm pm2 jq sqlite3 python3)
 # Needed to actually do anything; auth is manual.
 AGENT_CLIS=(claude)
 
+# Agent skills the relay relies on (installed into ~/.claude/skills via the
+# skills.sh CLI). pty-oauth-login lets the agent finish interactive OAuth
+# logins (`claude mcp add` + sign-in, etc.) from a Telegram chat — the user
+# has no SSH, so without it MCP servers can't be connected per-machine.
+SKILLS_REPO="terryds/skills"
+REQUIRED_SKILLS=(pty-oauth-login)
+
 # Colors, only when stdout is a terminal.
 if [ -t 1 ]; then
   C_OK=$'\033[32m'; C_BAD=$'\033[31m'; C_WARN=$'\033[33m'; C_DIM=$'\033[2m'; C_RST=$'\033[0m'
@@ -23,6 +30,12 @@ else
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
+have_skill() { [ -f "$HOME/.claude/skills/$1/SKILL.md" ]; }
+
+# Install one skill from SKILLS_REPO globally for Claude Code (needs npx).
+install_skill() {
+  npx -y skills@latest add "$SKILLS_REPO" --skill "$1" -g -y -a claude-code
+}
 
 # Best-effort one-line version string for a tool.
 version_of() {

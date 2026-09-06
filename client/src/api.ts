@@ -98,10 +98,14 @@ export type PluginInfo = {
   hasHooks: boolean;
 };
 
+export type RequiredSkill = { name: string; installed: boolean };
+
 export type Capabilities = {
   skills: SkillInfo[];
   plugins: PluginInfo[];
   mcp: McpSnapshot | null;
+  /** Skills the relay depends on (bin/install installs them). */
+  required_skills: RequiredSkill[];
 };
 
 export type QrPairing = {

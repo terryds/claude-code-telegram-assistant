@@ -82,6 +82,23 @@ for d in "${AGENT_CLIS[@]}"; do
 done
 
 echo
+echo "Agent skills (required — installed to ~/.claude/skills):"
+for s in "${REQUIRED_SKILLS[@]}"; do
+  if have_skill "$s"; then
+    printf '  %s✓%s %s already present\n' "$C_OK" "$C_RST" "$s"
+  elif ! have npx; then
+    printf '  %s✗%s %s — npx not available, cannot install\n' "$C_BAD" "$C_RST" "$s"; rc=1
+  else
+    printf '  %s…%s installing %s from %s\n' "$C_WARN" "$C_RST" "$s" "$SKILLS_REPO"
+    if install_skill "$s" >/dev/null 2>&1 && have_skill "$s"; then
+      printf '  %s✓%s %s installed\n' "$C_OK" "$C_RST" "$s"
+    else
+      printf '  %s✗%s %s install failed — try: npx skills add %s --skill %s -g\n' "$C_BAD" "$C_RST" "$s" "$SKILLS_REPO" "$s"; rc=1
+    fi
+  fi
+done
+
+echo
 if [ "$rc" -eq 0 ]; then
   echo "${C_OK}Core dependencies ready.${C_RST}"
   echo "If bun was just installed, open a new shell (or: source ~/.bashrc) so it's on PATH."

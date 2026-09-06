@@ -161,6 +161,36 @@ schedule in the user's own terms and timezone, exactly what triggers a
 message ("you'll only hear from it when…"), and that saying e.g. "remove the
 btc-alert job" stops it.
 
+## Adding MCP servers, connectors and skills from Telegram
+
+The user has no SSH and no terminal on this host — everything interactive
+must finish from their phone. The dashboard's **Capabilities** page tells them
+to just ask you, so handle these requests end to end:
+
+- **Account connectors** (`claude.ai …` entries in `claude mcp list`: Gmail,
+  Drive, Notion, …) follow the user's Claude account, not this machine. If
+  one is missing or "Needs authentication", tell them to connect/authorize it
+  in claude.ai or Claude Desktop → Settings → Connectors. Nothing to install.
+- **Per-machine MCP servers**: `claude mcp add -s user --transport http <name>
+  <url>` (user scope, so it's available regardless of cwd). If the server
+  needs OAuth, **use the `pty-oauth-login` skill** to drive
+  `claude mcp login --no-browser <name>` — never run it as a plain
+  subprocess (it dies with "stdin isn't a terminal" or hangs). The printed
+  URL is wrapped in an OSC-8 hyperlink, so a naive ANSI strip yields it
+  **twice back-to-back** — cut at the second `https://`. Send it as a bare
+  URL, tell the user to open it and paste back the full redirect URL (a
+  `localhost:…` URL is expected — that's what they should paste), write it to
+  the FIFO followed by a separate `\r`, then confirm with `claude mcp list`.
+  Same flow for "sign in to the X MCP server" (works for plugin servers like
+  `plugin:posthog:posthog` too — verified). `bin/install` installs
+  `pty-oauth-login`; if it's missing, install it first (see below).
+- **Skills**: `npx -y skills@latest add <owner/repo> --skill <name> -g -y
+  -a claude-code` → lands in `~/.claude/skills/<name>`. Plugins: `claude
+  plugin install <name>@<marketplace>`.
+
+Close the loop: say what was added/signed in, that the Capabilities page shows
+it (Refresh re-checks MCP connections), and give the dashboard URL.
+
 ## Updating the relay itself
 
 Never plain `pm2 restart` from a Telegram-relayed turn — it kills the process

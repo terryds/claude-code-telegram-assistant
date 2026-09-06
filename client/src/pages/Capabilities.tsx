@@ -67,8 +67,8 @@ export function Capabilities() {
         <h1 className="text-2xl font-semibold">Capabilities</h1>
         <p className="text-zinc-400 text-sm mt-1">
           What the Claude Code on this host can reach: connected MCP servers, the skills it
-          can invoke, and installed plugins. Read-only — manage these with the{' '}
-          <code className="text-zinc-300">claude</code> CLI.
+          can invoke, and installed plugins. This page is read-only — to add or change
+          anything, just ask over Telegram (see below).
         </p>
       </header>
 
@@ -78,6 +78,7 @@ export function Capabilities() {
         <p className="text-zinc-500 text-sm">Loading…</p>
       ) : (
         <>
+          <HowToAdd required={data.required_skills} />
           <McpSection
             snapshot={data.mcp}
             refreshing={refreshing}
@@ -88,6 +89,99 @@ export function Capabilities() {
         </>
       )}
     </div>
+  );
+}
+
+// ── How to add more ─────────────────────────────────────────────────
+
+function Prompt({ children }: { children: string }) {
+  return (
+    <div className="flex items-start gap-2 mt-1.5">
+      <span className="text-zinc-600 select-none">›</span>
+      <code className="text-zinc-200 text-xs leading-relaxed">“{children}”</code>
+      <button
+        onClick={() => navigator.clipboard?.writeText(children)}
+        className="ml-auto shrink-0 text-[11px] text-zinc-500 hover:text-zinc-300"
+        title="Copy prompt"
+      >
+        copy
+      </button>
+    </div>
+  );
+}
+
+function HowToAdd({ required }: { required: CapabilitiesData['required_skills'] }) {
+  const missing = required.filter((r) => !r.installed);
+  return (
+    <section className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-4 text-sm">
+      <h2 className="font-medium text-zinc-100">How to add more — no SSH needed</h2>
+
+      {missing.length > 0 && (
+        <div className="rounded border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+          Missing required skill{missing.length > 1 ? 's' : ''}:{' '}
+          {missing.map((m) => (
+            <code key={m.name} className="text-amber-100 mr-1">
+              {m.name}
+            </code>
+          ))}
+          — without it Claude can't finish sign-ins from Telegram. On the host run{' '}
+          <code className="text-amber-100">bin/install</code>, or ask in Telegram:
+          <Prompt>Install the pty-oauth-login skill from terryds/skills</Prompt>
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <div className="text-zinc-200 font-medium">Connectors on your Claude account</div>
+          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
+            Google Drive, Gmail, Notion, Canva… connect them once in Claude Desktop or
+            claude.ai under <span className="text-zinc-300">Settings → Connectors</span>. They
+            follow your account, so every Claude Code signed in as you — including this host —
+            gets them automatically. They show up above as{' '}
+            <code className="text-zinc-300">claude.ai …</code>. Nothing to do here.
+          </p>
+        </div>
+        <div>
+          <div className="text-zinc-200 font-medium">MCP servers on this machine</div>
+          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
+            Ask Claude in Telegram. It adds the server, sends you the sign-in link, you open it
+            on your phone and paste back the code or the redirect URL it lands on (a{' '}
+            <code className="text-zinc-300">localhost</code> one is fine) — Claude finishes the
+            login for you.
+          </p>
+          <Prompt>Add the Notion MCP server at https://mcp.notion.com/mcp and sign me in</Prompt>
+          <Prompt>Sign in to the posthog MCP server</Prompt>
+        </div>
+        <div>
+          <div className="text-zinc-200 font-medium">Skills</div>
+          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
+            Any skill on GitHub or{' '}
+            <a
+              className="underline hover:text-zinc-200"
+              href="https://skills.sh"
+              target="_blank"
+              rel="noreferrer"
+            >
+              skills.sh
+            </a>{' '}
+            — Claude installs it with the skills.sh CLI into{' '}
+            <code className="text-zinc-300">~/.claude/skills</code>.
+          </p>
+          <Prompt>Install the frontend-design skill from anthropics/skills</Prompt>
+        </div>
+        <div>
+          <div className="text-zinc-200 font-medium">Plugins</div>
+          <p className="text-zinc-400 text-xs mt-1 leading-relaxed">
+            Bundles of skills, agents and MCP servers from a marketplace.
+          </p>
+          <Prompt>Install the posthog plugin from the official Claude plugin marketplace</Prompt>
+        </div>
+      </div>
+      <p className="text-xs text-zinc-500">
+        Changes appear here on reload; hit <span className="text-zinc-400">Refresh</span> under
+        MCP servers to re-check connections.
+      </p>
+    </section>
   );
 }
 
@@ -152,9 +246,10 @@ function McpSection({
       </div>
       {servers.some((s) => s.status === 'needs_auth') && (
         <p className="mt-2 text-xs text-zinc-500">
-          Servers marked “needs authentication” are configured but not signed in. Run{' '}
-          <code className="text-zinc-400">claude</code> on the host and use{' '}
-          <code className="text-zinc-400">/mcp</code> to authorize them.
+          “Needs authentication” means configured but not signed in. For{' '}
+          <code className="text-zinc-400">claude.ai …</code> connectors, authorize them in
+          claude.ai → Settings → Connectors. For anything else, ask in Telegram: “Sign in to
+          the &lt;name&gt; MCP server” — Claude sends you the link and finishes the login.
         </p>
       )}
     </section>
