@@ -1,26 +1,25 @@
 /**
  * Shared types and selection logic for pluggable coding-agent engines.
  *
- * The relay can drive either Claude Code or Codex. Both follow the same model:
- * spawn a CLI once per Telegram message, stream intermediate steps (thinking,
- * tool calls, results) back live, and return a final result. Conversations are
- * continued by resuming a session id. A single global engine is active at a
- * time (stored in settings); the user switches it via the dashboard or the
- * `/engine` Telegram command.
+ * The relay drives Claude Code. Engines follow one model: spawn a CLI once per
+ * Telegram message, stream intermediate steps (thinking, tool calls, results)
+ * back live, and return a final result. Conversations are continued by
+ * resuming a session id. A single global engine is active at a time (stored in
+ * settings); the user switches it via the dashboard or the `/engine` Telegram
+ * command. (Codex was supported until the `codex-support` branch.)
  */
 import { getSetting, setSetting, deleteSetting } from './db.ts';
 
-export type EngineId = 'claude' | 'codex';
+export type EngineId = 'claude';
 
-export const ENGINE_IDS: EngineId[] = ['claude', 'codex'];
+export const ENGINE_IDS: EngineId[] = ['claude'];
 
 export const ENGINE_LABELS: Record<EngineId, string> = {
   claude: 'Claude Code',
-  codex: 'Codex',
 };
 
 export function isEngineId(v: string): v is EngineId {
-  return v === 'claude' || v === 'codex';
+  return v === 'claude';
 }
 
 // ── Streamed steps ──────────────────────────────────────────────────
@@ -121,7 +120,6 @@ export function setEngineId(id: EngineId): void {
 /** Env var each CLI reads its API key from when using API-key auth. */
 export const API_KEY_ENV: Record<EngineId, string> = {
   claude: 'ANTHROPIC_API_KEY',
-  codex: 'OPENAI_API_KEY',
 };
 
 export function isAuthMethod(v: string): v is AuthMethod {

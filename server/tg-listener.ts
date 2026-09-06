@@ -54,8 +54,7 @@ const TG_OFFSET_KEY = 'telegram_update_offset';
 // so group and private conversations don't bleed into each other.
 //
 // Despite the legacy "claude" name, the key stores the ACTIVE engine's resume
-// id — a Claude session id or a Codex thread id. That's safe because switching
-// engines clears every session (ids never cross engines).
+// id. Switching engines clears every session (ids never cross engines).
 const CLAUDE_SESSION_KEY = 'claude_session_id';
 
 function groupSessionKey(chatId: string, topicThreadId: number | string | null): string {
@@ -489,7 +488,7 @@ function formatRunError(error: string): string {
     return `⚠️ <b>${escapeHtml(label)} error</b>\n${escapeHtml(error)}`;
   }
   const url = getDashboardUrl();
-  const signIn = engine === 'claude' ? 'Sign in with Claude' : 'Sign in with Codex';
+  const signIn = 'Sign in with Claude';
   return [
     `⚠️ <b>${escapeHtml(label)} got signed out</b>`,
     'To sign back in from the dashboard:',
@@ -695,7 +694,6 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
           '',
           'Switch with:',
           '  /engine claude — use Claude Code',
-          '  /engine codex — use Codex',
           '',
           '<i>Switching starts a fresh conversation.</i>',
         ].join('\n'),
@@ -704,7 +702,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
       return;
     }
     if (!isEngineId(arg)) {
-      await sendTelegram(`⚠️ Unknown engine <code>${escapeHtml(arg)}</code>. Use <code>claude</code> or <code>codex</code>.`, { target });
+      await sendTelegram(`⚠️ Unknown engine <code>${escapeHtml(arg)}</code>. Use <code>claude</code>.`, { target });
       return;
     }
     // Stop every in-flight run and clear every session — sessions don't carry
@@ -863,7 +861,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
   if (text === '/start' || text === '/help') {
     await sendTelegram(
       [
-        '<b>Coding Agent Telegram Relay</b>',
+        '<b>Claude Code Telegram Assistant</b>',
         '',
         `Send a message and I'll relay it to <b>${escapeHtml(engineLabel)}</b> running on your VPS.`,
         '',
@@ -874,7 +872,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         'Commands:',
         '  /stop — interrupt the agent while it\'s working',
         '  /new_session — start a fresh conversation',
-        '  /engine — show or switch the active engine (Claude Code / Codex)',
+        '  /engine — show or switch the active engine',
         '  /persona — show or customize the assistant\'s persona',
         '  /skills — list the agent skills available on this host',
         '  /jobs — list scheduled watcher jobs (recurring checks)',

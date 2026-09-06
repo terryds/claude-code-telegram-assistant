@@ -3,11 +3,10 @@
  * locations of the given engine and returns name + description pairs.
  *
  * Claude Code skills live in `.claude/skills/<name>/SKILL.md` (project and
- * personal dirs) plus installed plugins; Codex custom prompts live in
- * `~/.codex/prompts/<name>.md`.
+ * personal dirs) plus installed plugins.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { EngineId } from './engine.ts';
 
@@ -88,37 +87,6 @@ function scanPluginSkills(root: string, depth = 0): SkillInfo[] {
   return out;
 }
 
-/** List `~/.codex/prompts/*.md` custom prompts (invoked as /name in Codex). */
-function scanCodexPrompts(dir: string): SkillInfo[] {
-  if (!existsSync(dir)) return [];
-  const out: SkillInfo[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  for (const entry of entries) {
-    if (!entry.endsWith('.md')) continue;
-    const name = basename(entry, '.md');
-    let raw = '';
-    try {
-      raw = readFileSync(join(dir, entry), 'utf8');
-    } catch {
-      continue;
-    }
-    // No frontmatter convention for Codex prompts — use the first non-empty
-    // line as the description.
-    const firstLine =
-      raw
-        .split('\n')
-        .map((l) => l.replace(/^#+\s*/, '').trim())
-        .find((l) => l.length > 0) ?? '';
-    out.push({ name, description: firstLine, source: 'prompt' });
-  }
-  return out;
-}
-
 export function listSkills(engine: EngineId): SkillInfo[] {
   const home = homedir();
   const seen = new Set<string>();
@@ -128,10 +96,6 @@ export function listSkills(engine: EngineId): SkillInfo[] {
       seen.add(s.name);
       return true;
     });
-
-  if (engine === 'codex') {
-    return dedupe(scanCodexPrompts(join(home, '.codex', 'prompts')));
-  }
 
   // Project skills shadow personal ones, which shadow plugin ones — scan in
   // that order and dedupe by name.

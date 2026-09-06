@@ -15,7 +15,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type BotInfo = { id: number; username: string; first_name: string };
 
-export type EngineId = 'claude' | 'codex';
+export type EngineId = 'claude';
 export type EngineInfo = { id: EngineId; label: string };
 
 export type AuthMethod = 'subscription' | 'apikey';
@@ -193,14 +193,6 @@ export const api = {
     ),
   claudeLoginCancel: () =>
     request<{ ok: true }>('/auth/claude-login/cancel', { method: 'POST' }),
-  codexLoginStart: () =>
-    request<{ url: string; code: string }>('/auth/codex-login/start', { method: 'POST' }),
-  codexLoginState: () =>
-    request<{ state: 'idle' | 'awaiting' | 'done' | 'error'; error?: string }>(
-      '/auth/codex-login/status'
-    ),
-  codexLoginCancel: () =>
-    request<{ ok: true }>('/auth/codex-login/cancel', { method: 'POST' }),
   setEngine: (engine: EngineId) =>
     request<{ ok: true; engine: EngineId }>('/engine', {
       method: 'POST',

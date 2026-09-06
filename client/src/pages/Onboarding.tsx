@@ -19,11 +19,6 @@ const INSTALL_DOCS: Record<EngineId, { label: string; cli: string; href: string 
     cli: 'claude',
     href: 'https://docs.claude.com/en/docs/claude-code/overview',
   },
-  codex: {
-    label: 'Codex',
-    cli: 'codex',
-    href: 'https://developers.openai.com/codex/cli',
-  },
 };
 
 export function Onboarding({ status, onChange }: Props) {
@@ -261,8 +256,8 @@ export function Onboarding({ status, onChange }: Props) {
       <header className="mb-10">
         <h1 className="text-2xl font-semibold">Welcome to claude-code-telegram-assistant</h1>
         <p className="text-zinc-400 text-sm mt-1">
-          Relay messages from a Telegram bot to your coding agent (Claude Code or
-          Codex) running on this machine.
+          Relay messages from a Telegram bot to Claude Code running on this
+          machine.
         </p>
       </header>
 
@@ -273,6 +268,9 @@ export function Onboarding({ status, onChange }: Props) {
           active={step === 1}
           done={agentOk && authed}
         >
+          {/* The picker only makes sense with more than one engine. */}
+          {status.engines.length > 1 && (
+            <>
           <p className="text-zinc-400 text-sm mb-3">
             Pick which agent the relay drives. You can switch later from the
             dashboard or with the <code>/engine</code> command in Telegram.
@@ -293,6 +291,8 @@ export function Onboarding({ status, onChange }: Props) {
               </button>
             ))}
           </div>
+            </>
+          )}
 
           {checking ? (
             <p className="text-zinc-400 text-sm">Checking…</p>
@@ -335,11 +335,6 @@ export function Onboarding({ status, onChange }: Props) {
                 >
                   the {INSTALL_DOCS[engine].label} docs
                 </a>
-                {engine === 'codex' && (
-                  <>
-                    {' '}and sign in with <code>codex login</code>
-                  </>
-                )}
                 , then re-check.
               </p>
               <button

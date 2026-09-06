@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install — install missing dependencies on Ubuntu/Debian (apt). Idempotent:
-# only installs what's absent, safe to re-run. Does NOT install the agent CLIs
-# (claude/codex) or run their login — it prints pointers for those instead.
+# only installs what's absent, safe to re-run. Does NOT install the agent CLI
+# (claude) or run its login — it prints pointers for that instead.
 #
 # Uses sudo for system packages when not run as root.
 set -uo pipefail

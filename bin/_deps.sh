@@ -12,8 +12,8 @@
 #   python3    — PTY bridge for in-dashboard Claude subscription sign-in
 CORE_DEPS=(git curl bun node npm pm2 jq sqlite3 python3)
 
-# At least one of these is needed to actually do anything; auth is manual.
-AGENT_CLIS=(claude codex)
+# Needed to actually do anything; auth is manual.
+AGENT_CLIS=(claude)
 
 # Colors, only when stdout is a terminal.
 if [ -t 1 ]; then
@@ -36,15 +36,13 @@ version_of() {
     sqlite3) sqlite3 --version 2>/dev/null | awk '{print $1}' ;;
     curl)    curl --version 2>/dev/null | head -1 | awk '{print $2}' ;;
     claude)  claude --version 2>/dev/null | head -1 ;;
-    codex)   codex --version 2>/dev/null | head -1 ;;
     *)       "$1" --version 2>/dev/null | head -1 ;;
   esac
 }
 
-# Install/login pointers for the agent CLIs (no auto-install).
+# Install/login pointer for the agent CLI (no auto-install).
 agent_hint() {
   case "$1" in
     claude) echo "https://docs.claude.com/en/docs/claude-code/overview  (then run: claude  and sign in)" ;;
-    codex)  echo "https://developers.openai.com/codex/cli  (then run: codex login)" ;;
   esac
 }

@@ -59,7 +59,6 @@ import {
   cancelClaudeLogin,
   claudeLoginStatus,
 } from './claude-login.ts';
-import { startCodexLogin, cancelCodexLogin, codexLoginState } from './codex-login.ts';
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
 import {
   startQrPairing,
@@ -252,7 +251,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     });
   }
 
-  // Verify a given engine's CLI is installed. `?engine=claude|codex`
+  // Verify a given engine's CLI is installed. `?engine=claude`
   // (defaults to the active engine). `/claude-check` kept as a back-compat alias.
   if ((p === '/agent-check' || p === '/claude-check') && m === 'GET') {
     const q = url.searchParams.get('engine');
@@ -262,7 +261,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   }
 
   // Live-probe whether the given engine's CLI is authenticated. Slow (runs a
-  // tiny real turn). `?engine=claude|codex` (defaults to the active engine).
+  // tiny real turn). `?engine=claude` (defaults to the active engine).
   if (p === '/auth-check' && m === 'GET') {
     const q = url.searchParams.get('engine');
     const id = q && isEngineId(q) ? q : getEngineId();
@@ -286,7 +285,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   if (p === '/auth-config' && m === 'POST') {
     const body = await readBody<{ engine?: string; method?: string; apiKey?: string }>(req);
     const id = (body.engine || getEngineId()).trim();
-    if (!isEngineId(id)) return err(400, 'engine must be "claude" or "codex"');
+    if (!isEngineId(id)) return err(400, 'engine must be "claude"');
     if (body.method !== undefined) {
       if (!isAuthMethod(body.method)) {
         return err(400, 'method must be "subscription" or "apikey"');
@@ -324,26 +323,6 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     return json(claudeLoginStatus());
   }
 
-  // Codex subscription sign-in (device-authorization flow). Start → returns the
-  // verification URL + one-time code; the user enters it in their browser and
-  // the CLI polls to completion (no paste needed).
-  if (p === '/auth/codex-login/start' && m === 'POST') {
-    try {
-      return json(await startCodexLogin());
-    } catch (e) {
-      return err(400, e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  if (p === '/auth/codex-login/status' && m === 'GET') {
-    return json(codexLoginState());
-  }
-
-  if (p === '/auth/codex-login/cancel' && m === 'POST') {
-    cancelCodexLogin();
-    return json({ ok: true });
-  }
-
   if (p === '/auth/claude-login/cancel' && m === 'POST') {
     cancelClaudeLogin();
     return json({ ok: true });
@@ -356,7 +335,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   if (p === '/engine' && m === 'POST') {
     const body = await readBody<{ engine?: string }>(req);
     const id = (body.engine || '').trim();
-    if (!isEngineId(id)) return err(400, 'engine must be "claude" or "codex"');
+    if (!isEngineId(id)) return err(400, 'engine must be "claude"');
     // Sessions don't carry across engines; stop in-flight runs and clear so
     // the next message is fresh.
     stopAllRuns();

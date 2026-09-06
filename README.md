@@ -1,26 +1,24 @@
 # claude-code-telegram-assistant
 
-A tiny relay that forwards Telegram messages to a coding agent — [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) **or** [Codex](https://developers.openai.com/codex/cli) — running on your VPS, and sends the agent's response back. Single-user, self-hosted, no external services beyond Telegram and your local CLI.
+A tiny relay that forwards Telegram messages to [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) running on your VPS, and sends the agent's response back. Single-user, self-hosted, no external services beyond Telegram and your local CLI.
 
 - **Stack**: [Bun](https://bun.sh) + React (Vite) + Tailwind + Wouter + `bun:sqlite`
-- **Two engines** — drive Claude Code or Codex; pick one in onboarding, switch anytime from the dashboard or the `/engine` Telegram command
 - **No Telegram SDK** — just `fetch` against the Bot API
-- **No vendor SDK** — spawns your local `claude` / `codex` CLI (inherits its auth)
-- **Session continuity** — `claude --resume` / `codex exec resume` keep the conversation across messages
-- **Guided onboarding** UI: choose engine + detect its CLI, paste bot token, capture your chat ID
+- **No vendor SDK** — spawns your local `claude` CLI (inherits its auth)
+- **Session continuity** — `claude --resume` keeps the conversation across messages
+- **Guided onboarding** UI: detect the CLI, authenticate, paste bot token, capture your chat ID
 - **Group topics** — link any number of group forum topics (or whole groups) from the dashboard; the bot answers there in addition to your private chat, each with its own conversation
 - **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
 
-> Codex is driven via `codex exec --json` (one process per message, resumed by thread id) — the same one-shot-plus-resume model the relay already uses for Claude. It runs with `--dangerously-bypass-approvals-and-sandbox` to match Claude's `bypassPermissions`, so it works unattended. Keep the host's `codex` current — older CLIs may reject newer default models.
+> Codex support was removed. The engine layer is still pluggable (`server/engine.ts` / `server/engines.ts`); the last version that drove Codex is preserved on the `codex-support` branch.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) `>= 1.3.12`
-- The CLI for your chosen engine, installed on the machine that runs the relay.
-  You can **authenticate it from the dashboard** during onboarding (see
-  [Authentication](#authentication)), so it only needs to be on PATH:
-  - **Claude Code** — [install](https://docs.claude.com/en/docs/claude-code/overview); `claude --version` must work
-  - **Codex** — [install](https://developers.openai.com/codex/cli); `codex --version` must work
+- [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), installed
+  on the machine that runs the relay; `claude --version` must work. You can
+  **authenticate it from the dashboard** during onboarding (see
+  [Authentication](#authentication)), so it only needs to be on PATH.
 - `python3` — only for Claude's in-dashboard subscription sign-in (it drives a
   PTY). `bin/install` installs it; skip if you authenticate Claude another way.
 - A Telegram bot — create one with [@BotFather](https://t.me/BotFather) and
@@ -101,26 +99,23 @@ duplicating it. Group commands work with the usual `/command@YourBot` form.
 
 ## Authentication
 
-The relay spawns your local `claude` / `codex` CLI, so that CLI has to be
-authenticated. Onboarding (and the dashboard's agent-auth panel) detect this and
-offer two methods per engine, switchable anytime:
+The relay spawns your local `claude` CLI, so that CLI has to be authenticated.
+Onboarding (and the dashboard's agent-auth panel) detect this and offer two
+methods, switchable anytime:
 
-- **Subscription** — sign in with your Claude or ChatGPT/Codex plan, from the
-  dashboard, no terminal:
-  - **Claude Code** drives `claude auth login` (this is why `python3` is needed
-    — it runs the CLI in a PTY). Click **Sign in with Claude** and authorize in
-    your browser; the CLI detects completion on its own (pasting the code the
-    page shows is a fallback). This signs in the host's `claude` itself, so the
-    CLI also works outside the relay — no separate terminal login needed.
-  - **Codex** drives `codex login --device-auth`. Click **Sign in with Codex**,
-    open the page, and enter the one-time code.
-- **API key** — paste an Anthropic / OpenAI key. It's stored in `data/app.db` and
-  injected as `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` when the relay runs (this is
-  pay-per-token API billing, not your subscription).
+- **Subscription** — sign in with your Claude plan, from the dashboard, no
+  terminal. It drives `claude auth login` (this is why `python3` is needed — it
+  runs the CLI in a PTY). Click **Sign in with Claude** and authorize in your
+  browser; the CLI detects completion on its own (pasting the code the page
+  shows is a fallback). This signs in the host's `claude` itself, so the CLI
+  also works outside the relay — no separate terminal login needed.
+- **API key** — paste an Anthropic key. It's stored in `data/app.db` and
+  injected as `ANTHROPIC_API_KEY` when the relay runs (this is pay-per-token API
+  billing, not your subscription).
 
-Detection is cheap — `claude auth status` / `codex login status`, no model call.
-You can also authenticate the CLI yourself on the host (`claude auth login` or
-`codex login`) and the relay will pick it up.
+Detection is cheap — `claude auth status`, no model call. You can also
+authenticate the CLI yourself on the host (`claude auth login`) and the relay
+will pick it up.
 
 Older installs signed in via `claude setup-token`, which stored a token in
 `data/app.db` and injected it per-run. That token still works (it's injected as
@@ -149,7 +144,7 @@ bin/install        # installs anything missing (Ubuntu/Debian, uses sudo)
 bin/doctor         # read-only: report what's present / missing
 ```
 
-`bin/install` is idempotent (safe to re-run) and **does not** touch the agent CLIs — install Claude Code or Codex yourself (it prints the links). You don't have to log them in here: authentication can be done from the dashboard during onboarding (see [Authentication](#authentication)). This is also the "point your coding agent at the repo" path: an agent can run `bin/doctor`, then `bin/install`, then follow the agent-CLI hints.
+`bin/install` is idempotent (safe to re-run) and **does not** touch the agent CLI — install Claude Code yourself (it prints the link). You don't have to log it in here: authentication can be done from the dashboard during onboarding (see [Authentication](#authentication)). This is also the "point your coding agent at the repo" path: an agent can run `bin/doctor`, then `bin/install`, then follow the agent-CLI hints.
 
 <details>
 <summary>Or install everything by hand</summary>
@@ -169,14 +164,13 @@ sudo npm install -g pm2
 # deploy-script helpers (+ python3 for Claude's in-dashboard sign-in)
 sudo apt install -y git jq sqlite3 python3
 
-# An agent CLI (pick one or both):
+# The agent CLI
 npm install -g @anthropic-ai/claude-code   # Claude Code
-# Codex: see https://developers.openai.com/codex/cli
 ```
 
 </details>
 
-You can authenticate your agent from the dashboard during onboarding (subscription sign-in or API key — see [Authentication](#authentication)), so this is optional. To do it on the host instead, run `claude` (follow the auth flow, then `/exit`) and/or `codex login`.
+You can authenticate your agent from the dashboard during onboarding (subscription sign-in or API key — see [Authentication](#authentication)), so this is optional. To do it on the host instead, run `claude` (follow the auth flow, then `/exit`).
 
 ### 2. Clone and build
 
@@ -361,7 +355,7 @@ script is in use.
 - `/start`, `/help` — show usage
 - `/stop` — interrupt the agent while it's working (kills the in-flight run)
 - `/new_session` — start a fresh conversation (forgets prior context)
-- `/engine` — show or switch the active engine (`/engine claude` / `/engine codex`)
+- `/engine` — show or switch the active engine (currently only `claude`)
 - `/skills` — list the agent skills available on this host
 - `/jobs` — list scheduled watcher jobs (recurring checks the agent set up)
 - `/update` — pull the latest relay version, rebuild, and restart

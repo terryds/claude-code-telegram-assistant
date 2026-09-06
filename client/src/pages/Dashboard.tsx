@@ -145,6 +145,8 @@ export function Dashboard({ status, onChange }: Props) {
           )}
         </div>
         <div className="flex items-center gap-3">
+          {/* Engine switcher — hidden while only one engine is available. */}
+          {status.engines.length > 1 && (
           <div className="inline-flex rounded-full border border-zinc-700 overflow-hidden text-xs font-medium">
             {status.engines.map((e) => (
               <button
@@ -163,6 +165,7 @@ export function Dashboard({ status, onChange }: Props) {
               </button>
             ))}
           </div>
+          )}
           <span
             className={[
               'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium',

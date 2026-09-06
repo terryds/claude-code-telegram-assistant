@@ -35,7 +35,7 @@ if [ "$missing" -gt 0 ]; then
   echo "${C_BAD}${missing} core dependency(ies) missing.${C_RST} Run: ${DIR}/install"
 fi
 if [ "$agents" -eq 0 ]; then
-  echo "${C_WARN}No coding agent CLI found.${C_RST} Install Claude Code or Codex (see hints above)."
+  echo "${C_WARN}No coding agent CLI found.${C_RST} Install Claude Code (see hints above)."
 fi
 if [ "$missing" -eq 0 ] && [ "$agents" -gt 0 ]; then
   echo "${C_OK}All set.${C_RST}"

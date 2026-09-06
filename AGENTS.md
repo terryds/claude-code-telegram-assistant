@@ -3,12 +3,11 @@
 Guidance for AI coding agents working in this repo. (Claude Code reads this via
 the `@AGENTS.md` import in `CLAUDE.md`.)
 
-This is a single-user, self-hosted relay that forwards Telegram messages to a
-coding agent — **Claude Code or Codex** — running on the host, and sends the
-reply back. Stack: Bun + React (Vite) + Tailwind + `bun:sqlite`. The active
-engine is a global setting (switchable via the dashboard or the `/engine`
-Telegram command); engine implementations live behind `server/engine.ts` /
-`server/engines.ts`.
+This is a single-user, self-hosted relay that forwards Telegram messages to
+**Claude Code** running on the host, and sends the reply back. Stack: Bun +
+React (Vite) + Tailwind + `bun:sqlite`. Engines are pluggable behind
+`server/engine.ts` / `server/engines.ts` (Codex support was removed; see the
+`codex-support` branch).
 
 ## Replying over Telegram
 
@@ -94,7 +93,7 @@ Mention in your reply that the app was added to the dashboard's bookmarks.
 ## Messaging the user proactively (reminders, "tell me later")
 
 The relay is purely reactive: each incoming Telegram message spawns a one-shot
-headless run (`claude -p` / `codex exec`), and your process dies the moment
+headless run (`claude -p`), and your process dies the moment
 your turn ends. Harness timers (`ScheduleWakeup`, cron tools, background
 tasks) will **not** fire after that — never rely on them here.
 
