@@ -3,6 +3,7 @@ import { Link, useLocation } from 'wouter';
 const LINKS: Array<{ href: string; label: string }> = [
   { href: '/', label: 'Dashboard' },
   { href: '/capabilities', label: 'Capabilities' },
+  { href: '/memories', label: 'Memories' },
 ];
 
 /** Top navigation shared by the post-onboarding pages. */

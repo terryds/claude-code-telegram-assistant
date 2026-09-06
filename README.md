@@ -8,6 +8,7 @@ A tiny relay that forwards Telegram messages to [Claude Code](https://docs.claud
 - **Session continuity** — `claude --resume` keeps the conversation across messages
 - **Guided onboarding** UI: detect the CLI, authenticate, paste bot token, capture your chat ID
 - **Capabilities page** — read-only inventory of what the host's Claude Code can reach: MCP servers with live health, skills (project, personal, plugin), and installed plugins
+- **Memories page** — what Claude Code remembers on the host: its auto-saved memories for the relay's project, the instruction files (CLAUDE.md / AGENTS.md / rules) it reads every run, and memory folders of other projects
 - **Group topics** — link any number of group forum topics (or whole groups) from the dashboard; the bot answers there in addition to your private chat, each with its own conversation
 - **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
 

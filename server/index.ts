@@ -62,6 +62,7 @@ import {
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
 import { getCachedMcp, refreshMcp, listPlugins, checkRequiredSkills } from './capabilities.ts';
 import { listSkills } from './skills.ts';
+import { memoriesReport } from './memories.ts';
 import {
   startQrPairing,
   pollQrPairing,
@@ -360,6 +361,11 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
 
   if (p === '/capabilities/mcp/refresh' && m === 'POST') {
     return json(await refreshMcp());
+  }
+
+  // Read-only view of Claude Code's auto-memory + instruction files.
+  if (p === '/memories' && m === 'GET') {
+    return json(memoriesReport());
   }
 
   if (p === '/persona' && m === 'GET') {

@@ -98,6 +98,36 @@ export type PluginInfo = {
   hasHooks: boolean;
 };
 
+export type MemoryEntry = {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  body: string;
+  modified: string | null;
+  file: string;
+};
+export type MemoryProject = {
+  slug: string;
+  cwd: string | null;
+  dir: string;
+  index: string | null;
+  memories: MemoryEntry[];
+};
+export type InstructionFile = {
+  label: string;
+  scope: 'project' | 'global';
+  path: string;
+  content: string;
+  modified: string | null;
+};
+export type MemoriesReport = {
+  cwd: string;
+  current: MemoryProject | null;
+  instructions: InstructionFile[];
+  others: MemoryProject[];
+};
+
 export type RequiredSkill = { name: string; installed: boolean };
 
 export type Capabilities = {
@@ -246,6 +276,7 @@ export const api = {
     }),
   capabilities: () => request<Capabilities>('/capabilities'),
   refreshMcp: () => request<McpSnapshot>('/capabilities/mcp/refresh', { method: 'POST' }),
+  memories: () => request<MemoriesReport>('/memories'),
   stepCleanup: () => request<{ seconds: number }>('/step-cleanup'),
   setStepCleanup: (seconds: number) =>
     request<{ ok: true; seconds: number }>('/step-cleanup', {
