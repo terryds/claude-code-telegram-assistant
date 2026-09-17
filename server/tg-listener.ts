@@ -328,12 +328,89 @@ async function sendStep(step: EngineStep, target: SendTarget): Promise<void> {
 type ActiveRun = { abort: AbortController };
 const activeRuns = new Map<string, ActiveRun>();
 
+// ── Prompt queue ────────────────────────────────────────────────────
+//
+// `/queue <text>` defers a prompt until the conversation's current run has
+// finished instead of auto-stop-and-replacing it. Queues are per conversation
+// (same key as sessions/runs), in-memory only — a relay restart drops them.
+// Only the prompt text is stored: the session id and any pending context are
+// resolved when the item actually starts, so it resumes from whatever the
+// previous run left behind.
+
+type QueuedPrompt = { prompt: string; target: SendTarget; preview: string };
+const promptQueues = new Map<string, QueuedPrompt[]>();
+const MAX_QUEUE_LENGTH = 20;
+
+function queueLength(sessionKey: string): number {
+  return promptQueues.get(sessionKey)?.length ?? 0;
+}
+
+/** Drop every queued prompt for one conversation. Returns how many were dropped. */
+function clearQueue(sessionKey: string): number {
+  const n = queueLength(sessionKey);
+  promptQueues.delete(sessionKey);
+  return n;
+}
+
+/** Start the next queued prompt of a conversation, if any. */
+function dispatchNextQueued(sessionKey: string): void {
+  // Never launch on top of a live run (e.g. a replacement prompt started
+  // while the finished run was still delivering its reply) — the queue
+  // simply waits for that run to finish and drain it.
+  if (activeRuns.has(sessionKey)) return;
+  const queue = promptQueues.get(sessionKey);
+  if (!queue || queue.length === 0) return;
+  const next = queue.shift()!;
+  if (queue.length === 0) promptQueues.delete(sessionKey);
+  const remaining = queue.length;
+  void sendTelegram(
+    `▶️ <b>Starting queued task:</b> ${escapeHtml(next.preview)}` +
+      (remaining > 0 ? `\n<i>${remaining} more in the queue.</i>` : ''),
+    { target: next.target }
+  ).catch(() => {});
+  launchPrompt(next.prompt, next.target, sessionKey);
+}
+
+/** Resolve the session + pending context for a prompt and run it. */
+function launchPrompt(prompt: string, target: SendTarget, sessionKey: string): void {
+  // Out-of-band notifications (scheduled jobs, bin/notify, /api/notify callers
+  // like contentideas) were delivered straight to the user's Telegram — the
+  // agent never saw them. Surface them in this turn's prompt so a reply that
+  // references an alert ("expand the second draft") resolves correctly.
+  const pending = drainPendingContext(sessionKey);
+  if (pending.items.length > 0) {
+    prompt = `${formatPendingContext(pending.items, pending.omitted)}\n\n${prompt}`;
+  }
+
+  const sessionId = getSetting(sessionKey);
+
+  logMessage({ direction: 'in', text: prompt, session_id: sessionId });
+
+  console.log(
+    `[tg-listener] → ${getEngineId()} (${sessionId ? 'resume ' + sessionId.slice(0, 8) : 'new session'}): ${prompt.slice(0, 80)}`
+  );
+
+  // Fire-and-forget: the run streams its own output and the poll loop stays
+  // free to receive /stop and further messages.
+  startEngineRun(prompt, sessionId, target, sessionKey);
+}
+
+/** One-line summary of a prompt for queue listings and toasts. */
+function promptPreview(prompt: string): string {
+  const line = prompt.replace(/\s+/g, ' ').trim();
+  return line.length > 60 ? line.slice(0, 57) + '…' : line;
+}
+
 /**
  * Abort one conversation's run, if any. The engine owns its own stream cleanup
  * and tears it down synchronously off the abort signal, so a replacement run
  * can't overlap with it. Returns true if a run was actually stopped.
  */
 function stopRun(sessionKey: string): boolean {
+  // Note: does NOT touch the prompt queue — startEngineRun calls this to
+  // replace a run, including when it launches a queued item. Callers that
+  // mean "abandon the plan" (/stop, a replacement prompt, engine switch)
+  // clear the queue themselves.
   const run = activeRuns.get(sessionKey);
   if (!run) return false;
   activeRuns.delete(sessionKey); // claim it so the run's own cleanup won't double-clear
@@ -343,6 +420,7 @@ function stopRun(sessionKey: string): boolean {
 
 /** Abort every conversation's run (engine switch). Returns how many stopped. */
 export function stopAllRuns(): number {
+  promptQueues.clear();
   let n = 0;
   for (const key of Array.from(activeRuns.keys())) {
     if (stopRun(key)) n++;
@@ -415,9 +493,14 @@ function startEngineRun(
     }
 
     await deliverResult(result, target, sessionKey);
+    // Hand off to the next queued prompt only after this run's reply went
+    // out, so replies arrive in order. An aborted run never continues the
+    // queue — /stop and replacement prompts clear it anyway.
+    if (!abort.signal.aborted) dispatchNextQueued(sessionKey);
   })().catch((err) => {
     console.error('[tg-listener] engine run crashed:', err);
     if (activeRuns.get(sessionKey) === run) activeRuns.delete(sessionKey);
+    dispatchNextQueued(sessionKey);
   });
 }
 
@@ -654,7 +737,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
 
   // In groups, commands arrive as e.g. "/stop@MyBot" — strip the mention.
   const text = (msg.text ?? '').trim().replace(/^\/([a-z_]+)@\S+/i, '/$1');
-  const caption = (msg.caption ?? '').trim();
+  const caption = (msg.caption ?? '').trim().replace(/^\/([a-z_]+)@\S+/i, '/$1');
   const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
   const video = extractVideo(msg);
   const audio = extractAudio(msg);
@@ -665,11 +748,59 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
   const engineLabel = ENGINE_LABELS[getEngineId()];
 
   if (text === '/stop' || text.startsWith('/stop ')) {
-    // Scoped like /new_session: only this conversation's run is stopped.
+    // Scoped like /new_session: only this conversation's run (and its queue)
+    // is stopped.
+    const dropped = clearQueue(sessionKey);
+    const droppedNote =
+      dropped > 0 ? ` ${dropped} queued task${dropped === 1 ? '' : 's'} discarded.` : '';
     if (stopRun(sessionKey)) {
-      await sendTelegram(`🛑 <b>Stopped.</b> ${escapeHtml(engineLabel)} was interrupted.`, { target });
+      await sendTelegram(
+        `🛑 <b>Stopped.</b> ${escapeHtml(engineLabel)} was interrupted.${droppedNote}`,
+        { target }
+      );
+    } else if (dropped > 0) {
+      await sendTelegram(`🗑 <b>Queue cleared.</b>${droppedNote}`, { target });
     } else {
       await sendTelegram('💤 Nothing is running in this conversation.', { target });
+    }
+    return;
+  }
+
+  // `/queue` alone lists the queue; `/queue clear` empties it. `/queue <text>`
+  // (or a `/queue …` caption on an attachment) falls through to the prompt
+  // path below, which enqueues instead of auto-stop-and-replacing.
+  const queueCmd = /^\/queue(?:\s+([\s\S]*))?$/.exec(caption || text);
+  const queueArg = queueCmd ? (queueCmd[1] ?? '').trim() : null;
+  const queueThis = queueArg !== null && queueArg !== '' && queueArg !== 'clear';
+  if (queueArg !== null && !queueThis) {
+    if (queueArg === 'clear') {
+      const n = clearQueue(sessionKey);
+      await sendTelegram(
+        n > 0
+          ? `🗑 <b>Queue cleared.</b> ${n} task${n === 1 ? '' : 's'} discarded.`
+          : '📭 The queue is already empty.',
+        { target }
+      );
+      return;
+    }
+    const queue = promptQueues.get(sessionKey) ?? [];
+    if (queue.length === 0) {
+      await sendTelegram(
+        activeRuns.has(sessionKey)
+          ? '📭 <b>Queue is empty.</b>\nSend <code>/queue your message</code> to run something after the current task finishes.'
+          : '📭 <b>Queue is empty</b> and nothing is running — just send your message.',
+        { target }
+      );
+    } else {
+      await sendTelegram(
+        [
+          `📥 <b>Queued tasks</b> (${queue.length}):`,
+          ...queue.map((q, i) => `${i + 1}. ${escapeHtml(q.preview)}`),
+          '',
+          '<i>/queue clear — discard them all · /stop — stop the current task and discard them</i>',
+        ].join('\n'),
+        { target }
+      );
     }
     return;
   }
@@ -871,6 +1002,7 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         '',
         'Commands:',
         '  /stop — interrupt the agent while it\'s working',
+        '  /queue &lt;message&gt; — run a message after the current task finishes (instead of replacing it); /queue alone lists the queue, /queue clear empties it',
         '  /new_session — start a fresh conversation',
         '  /engine — show or switch the active engine',
         '  /persona — show or customize the assistant\'s persona',
@@ -884,17 +1016,20 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     return;
   }
 
+  // With `/queue <text>` the text after the command is the real message.
+  const userText = queueThis ? queueArg : caption || text;
+
   let prompt: string;
   if (video) {
-    prompt = await buildVideoPrompt(msg, video, caption || text, target);
+    prompt = await buildVideoPrompt(msg, video, userText, target);
   } else if (audio) {
-    prompt = await buildAudioPrompt(msg, audio, caption || text, target);
+    prompt = await buildAudioPrompt(msg, audio, userText, target);
   } else if (document) {
-    prompt = await buildDocumentPrompt(document, caption || text, target);
+    prompt = await buildDocumentPrompt(document, userText, target);
   } else if (hasPhoto) {
-    prompt = await buildPhotoPrompt(msg, caption || text, target);
+    prompt = await buildPhotoPrompt(msg, userText, target);
   } else {
-    prompt = text;
+    prompt = userText;
   }
   if (!prompt) return;
 
@@ -913,32 +1048,43 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
     prompt = `(This message comes from the Telegram group "${title}"${topicPart} — your reply goes back there.)\n\n${prompt}`;
   }
 
-  // Out-of-band notifications (scheduled jobs, bin/notify, /api/notify callers
-  // like contentideas) were delivered straight to the user's Telegram — the
-  // agent never saw them. Surface them in this turn's prompt so a reply that
-  // references an alert ("expand the second draft") resolves correctly.
-  const pending = drainPendingContext(sessionKey);
-  if (pending.items.length > 0) {
-    prompt = `${formatPendingContext(pending.items, pending.omitted)}\n\n${prompt}`;
+  const running = activeRuns.has(sessionKey);
+
+  if (queueThis && running) {
+    // Defer until the current run (and anything already queued) finishes.
+    const queue = promptQueues.get(sessionKey) ?? [];
+    if (queue.length >= MAX_QUEUE_LENGTH) {
+      await sendTelegram(
+        `⚠️ <b>Queue is full</b> (${MAX_QUEUE_LENGTH}). Wait for the current task or send /queue clear.`,
+        { target }
+      );
+      return;
+    }
+    queue.push({ prompt, target, preview: promptPreview(userText || prompt) });
+    promptQueues.set(sessionKey, queue);
+    await sendTelegram(
+      `📥 <b>Queued</b> (#${queue.length}). It'll run when the current task finishes.`,
+      { target }
+    );
+    return;
   }
 
-  const sessionId = getSetting(sessionKey);
-
-  logMessage({ direction: 'in', text: prompt, session_id: sessionId });
-
-  // Auto-stop & replace: a fresh prompt cancels whatever THIS conversation is
-  // still running (other conversations' runs are unaffected).
-  if (activeRuns.has(sessionKey)) {
-    await sendTelegram('🛑 Stopping the previous task and starting the new one…', { target });
+  if (running) {
+    // Auto-stop & replace: a fresh prompt cancels whatever THIS conversation is
+    // still running (other conversations' runs are unaffected) — and drops
+    // its queue, since the user chose a new plan.
+    const dropped = clearQueue(sessionKey);
+    await sendTelegram(
+      '🛑 Stopping the previous task and starting the new one…' +
+        (dropped > 0 ? ` (${dropped} queued task${dropped === 1 ? '' : 's'} discarded)` : ''),
+      { target }
+    );
+  } else if (queueThis) {
+    // Nothing to wait for — queueing into an idle conversation runs it now.
+    await sendTelegram('▶️ Nothing is running here, so starting it right away.', { target });
   }
 
-  console.log(
-    `[tg-listener] → ${getEngineId()} (${sessionId ? 'resume ' + sessionId.slice(0, 8) : 'new session'}): ${prompt.slice(0, 80)}`
-  );
-
-  // Fire-and-forget: the run streams its own output and the poll loop stays
-  // free to receive /stop and further messages.
-  startEngineRun(prompt, sessionId, target, sessionKey);
+  launchPrompt(prompt, target, sessionKey);
 }
 
 /** Cap the FYI preamble so a notification flood can't crowd out the prompt. */
@@ -1241,6 +1387,7 @@ export async function applyBotCommands(): Promise<void> {
   void applyBotDescription();
   await setMyCommands([
     { command: 'stop', description: 'Interrupt the agent while it is working' },
+    { command: 'queue', description: 'Run a message after the current task finishes' },
     { command: 'new_session', description: 'Start a new conversation' },
     { command: 'engine', description: 'Show or switch the active engine' },
     { command: 'persona', description: 'Show or customize the assistant persona' },

@@ -386,6 +386,7 @@ script is in use.
 
 - `/start`, `/help` — show usage
 - `/stop` — interrupt the agent while it's working (kills the in-flight run)
+- `/queue <message>` — run a message *after* the current task finishes instead of replacing it; `/queue` alone lists the queue, `/queue clear` empties it
 - `/new_session` — start a fresh conversation (forgets prior context)
 - `/engine` — show or switch the active engine (currently only `claude`)
 - `/skills` — list the agent skills available on this host
@@ -401,7 +402,9 @@ By default these tool-step messages are removed from the chat 1 minute after the
 To interrupt:
 
 - Send `/stop` to cancel the current run of *that conversation* and leave things idle (a run started from the group topic keeps going).
-- Send a new prompt while the agent is still working — it auto-stops that conversation's running task and starts the new one (auto-stop & replace).
+- Send a new prompt while the agent is still working — it auto-stops that conversation's running task and starts the new one (auto-stop & replace). Anything queued with `/queue` is discarded too.
+
+To **not** interrupt, prefix the message with `/queue`: it's held until the current task (and anything queued before it) finishes, then runs as a normal follow-up turn in the same session. Works as a caption on photos/files too. `/queue` on its own lists what's waiting, `/queue clear` drops it, and `/stop` stops the running task *and* clears the queue. Queues are per conversation and in-memory — a relay restart (e.g. `/update`) drops them. `/queue` into an idle conversation just runs the message immediately.
 
 Stopping is a hard process kill: any file edits Claude already made stay on disk, only the in-flight turn is cut. The interrupted turn isn't saved to the session, so the next message resumes from the last *completed* turn.
 
