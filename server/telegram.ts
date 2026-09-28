@@ -346,6 +346,70 @@ function splitMarkdown(text: string, max: number): string[] {
   return chunks;
 }
 
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
+const TABLE_DELIM_RE = /^\s{0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+function isTableRow(line: string): boolean {
+  return /^\s{0,3}\S/.test(line) && line.includes('|');
+}
+
+/**
+ * Telegram's GFM parser is stricter than GitHub's in one way that bites
+ * agent output constantly: a table cannot interrupt a paragraph. GitHub
+ * renders `**Heading**\n| a | b |\n|---|---|` as a table; Telegram renders
+ * the whole thing as one paragraph of literal pipes. Insert the blank line
+ * the parser needs before (and after) every table block, outside code fences.
+ */
+export function normalizeMarkdownForTelegram(markdown: string): string {
+  const lines = markdown.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let fence = '';
+  let inTable = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = line.match(FENCE_RE);
+    if (fenceMatch) {
+      const marker = fenceMatch[1];
+      if (!inFence) {
+        inFence = true;
+        fence = marker[0];
+      } else if (marker[0] === fence && marker.length >= fence.length) {
+        inFence = false;
+      }
+    }
+    if (inFence) {
+      inTable = false;
+      out.push(line);
+      continue;
+    }
+    if (!inTable) {
+      const next = lines[i + 1];
+      const startsTable =
+        isTableRow(line) &&
+        next !== undefined &&
+        TABLE_DELIM_RE.test(next) &&
+        next.includes('|');
+      if (startsTable) {
+        inTable = true;
+        const prev = out[out.length - 1];
+        if (prev !== undefined && prev.trim() !== '') out.push('');
+      }
+      out.push(line);
+      continue;
+    }
+    // Inside a table: it ends at the first line that isn't a row.
+    if (isTableRow(line)) {
+      out.push(line);
+      continue;
+    }
+    inTable = false;
+    if (line.trim() !== '') out.push('');
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 /**
  * Send GitHub-Flavored Markdown as a Telegram rich message (Bot API 10.1+).
  * If the API rejects the rich send (older Bot API, pathological markdown),
@@ -358,7 +422,7 @@ export async function sendTelegramRich(
   const { botToken, chatId } = getTelegramConfig();
   const dest = target ?? (chatId ? { chatId } : null);
   if (!botToken || !dest) return { ok: false, error: 'Telegram not configured' };
-  for (const chunk of splitMarkdown(markdown, MAX_TG_RICH)) {
+  for (const chunk of splitMarkdown(normalizeMarkdownForTelegram(markdown), MAX_TG_RICH)) {
     let rejection: string;
     try {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendRichMessage`, {
