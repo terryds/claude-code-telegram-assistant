@@ -351,6 +351,13 @@ pm2 restart claude-code-telegram-assistant
 `bin/safe-update-relay` (what `/update` and the dashboard's Update button run)
 does all of this for you, including installing any missing required skill.
 
+You don't have to remember to check: the relay fetches upstream on its own
+(shortly after it starts, then every 6 hours) and caches the result. The
+dashboard's top strip shows "up to date · checked 2h ago", or an **Update
+available** banner, and Telegram gets one message per new upstream version
+listing the commits — reply `/update` to install. "Check for updates" still
+forces an immediate check.
+
 `pm2 restart` reuses the saved process config, so you don't need to repeat `pm2 save` unless you changed the start command or env vars (in which case use `pm2 restart claude-code-telegram-assistant --update-env` and re-run `pm2 save`).
 
 Your bot token, chat link, and Claude session ID live in `data/app.db` — they survive restarts and code updates.

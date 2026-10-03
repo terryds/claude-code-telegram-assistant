@@ -59,7 +59,7 @@ import {
   cancelClaudeLogin,
   claudeLoginStatus,
 } from './claude-login.ts';
-import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
+import { updateInfo, checkForUpdates, startUpdate, startUpdateAutoCheck } from './updater.ts';
 import { getCachedMcp, refreshMcp, listPlugins, checkRequiredSkills } from './capabilities.ts';
 import { listSkills } from './skills.ts';
 import { memoriesReport } from './memories.ts';
@@ -520,9 +520,9 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   }
 
   if (p === '/update/check' && m === 'POST') {
-    const r = checkForUpdates();
+    const r = await checkForUpdates();
     if (!r.ok) return err(502, r.error);
-    return json(r);
+    return json({ ...r, checked_at: Date.now() });
   }
 
   if (p === '/update/run' && m === 'POST') {
@@ -762,6 +762,7 @@ startListener();
 startJobScheduler();
 startStepCleanupSweeper();
 startAuthExpiryWatch();
+startUpdateAutoCheck();
 
 // Refresh the Telegram command menu on boot so deploys pick up command changes.
 // (Otherwise setMyCommands only runs when the relay is toggled on, leaving the

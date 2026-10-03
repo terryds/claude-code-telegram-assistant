@@ -172,14 +172,30 @@ export type UpdateState = {
   ts: number;
 };
 
+/** Most recent remote check — manual or the relay's own periodic one. */
+export type UpdateCheckRecord = {
+  behind: number;
+  commits: CommitInfo[];
+  head: string | null;
+  checked_at: number;
+  error?: string;
+};
+
 export type UpdateInfo = {
   current: CommitInfo | null;
   managed: boolean;
   running: boolean;
   state: UpdateState | null;
+  check: UpdateCheckRecord | null;
 };
 
-export type UpdateCheck = { ok: true; behind: number; commits: CommitInfo[] };
+export type UpdateCheck = {
+  ok: true;
+  behind: number;
+  commits: CommitInfo[];
+  head: string | null;
+  checked_at: number;
+};
 
 export type AgentCheck = {
   installed: boolean;

@@ -9,6 +9,9 @@
 
 import { resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { getSetting, setSetting, logMessage } from './db.ts';
+import { sendTelegram } from './telegram.ts';
+import { getDashboardUrl } from './dashboard-url.ts';
 
 const REPO_DIR = resolve(import.meta.dir, '..');
 const SCRIPT = resolve(REPO_DIR, 'bin/safe-update-relay');
@@ -27,6 +30,23 @@ export type UpdateState = {
 };
 
 export type CommitInfo = { sha: string; subject: string; date?: string };
+
+/** Outcome of the most recent remote check (manual or automatic). */
+export type UpdateCheckRecord = {
+  behind: number;
+  commits: CommitInfo[];
+  /** Upstream head sha — identifies "this" update for once-only notices. */
+  head: string | null;
+  checked_at: number;
+  /** Set when the check itself failed (fetch error); behind/commits are stale. */
+  error?: string;
+};
+
+let lastCheck: UpdateCheckRecord | null = null;
+
+export function getLastUpdateCheck(): UpdateCheckRecord | null {
+  return lastCheck;
+}
 
 function git(args: string[]): string | null {
   const r = Bun.spawnSync(['git', ...args], { cwd: REPO_DIR });
@@ -75,27 +95,62 @@ export function updateInfo(): {
   managed: boolean;
   running: boolean;
   state: UpdateState | null;
+  check: UpdateCheckRecord | null;
 } {
   return {
     current: currentVersion(),
     managed: isPm2Managed(),
     running: isUpdateRunning(),
     state: readUpdateState(),
+    check: lastCheck,
   };
 }
 
-/** git fetch + how far behind upstream we are. Network call — user-triggered. */
-export function checkForUpdates():
-  | { ok: true; behind: number; commits: CommitInfo[] }
-  | { ok: false; error: string } {
-  const fetch = Bun.spawnSync(['git', 'fetch', '--quiet'], { cwd: REPO_DIR });
-  if (fetch.exitCode !== 0) {
-    return { ok: false, error: `git fetch failed: ${fetch.stderr.toString().trim() || 'unknown error'}` };
-  }
+/**
+ * git fetch + how far behind upstream we are. A network call, so it's async
+ * (the auto-check runs inside the relay and must not block message handling).
+ * The outcome is cached for the dashboard either way.
+ */
+export async function checkForUpdates(): Promise<
+  | { ok: true; behind: number; commits: CommitInfo[]; head: string | null }
+  | { ok: false; error: string }
+> {
+  const fail = (error: string) => {
+    lastCheck = {
+      behind: lastCheck?.behind ?? 0,
+      commits: lastCheck?.commits ?? [],
+      head: lastCheck?.head ?? null,
+      checked_at: Date.now(),
+      error,
+    };
+    return { ok: false as const, error };
+  };
+  const fetch = Bun.spawn(['git', 'fetch', '--quiet'], {
+    cwd: REPO_DIR,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  const timer = setTimeout(() => {
+    try {
+      fetch.kill();
+    } catch {
+      // ignore
+    }
+  }, 60_000);
+  const [, fetchErr, fetchCode] = await Promise.all([
+    new Response(fetch.stdout).text(),
+    new Response(fetch.stderr).text(),
+    fetch.exited,
+  ]);
+  clearTimeout(timer);
+  if (fetchCode !== 0) return fail(`git fetch failed: ${fetchErr.trim() || 'unknown error'}`);
+
   const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']) || 'origin/main';
   const behindRaw = git(['rev-list', '--count', `HEAD..${upstream}`]);
-  if (behindRaw === null) return { ok: false, error: `Cannot compare against ${upstream}.` };
+  if (behindRaw === null) return fail(`Cannot compare against ${upstream}.`);
   const behind = Number(behindRaw) || 0;
+  const head = git(['rev-parse', '--short', upstream]);
   const commits: CommitInfo[] = [];
   if (behind > 0) {
     const log = git(['log', `HEAD..${upstream}`, '--format=%h\t%s', '-n', '10']) || '';
@@ -104,7 +159,63 @@ export function checkForUpdates():
       commits.push({ sha, subject });
     }
   }
-  return { ok: true, behind, commits };
+  lastCheck = { behind, commits, head, checked_at: Date.now() };
+  return { ok: true, behind, commits, head };
+}
+
+// ── Automatic check ─────────────────────────────────────────────────
+//
+// The dashboard used to know about new versions only when someone clicked
+// "Check for updates". Now the relay checks on its own — shortly after boot
+// and then periodically — caches the result for the dashboard, and tells the
+// user over Telegram once per new upstream version (they can reply /update).
+
+const AUTO_CHECK_MS = 6 * 60 * 60 * 1000;
+const NOTIFIED_HEAD_KEY = 'update_notified_head';
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export async function autoCheckForUpdates(): Promise<void> {
+  if (isUpdateRunning()) return; // the updater is mid-flight; the restart will re-check
+  const r = await checkForUpdates();
+  if (!r.ok) {
+    console.warn(`[updater] auto-check failed: ${r.error}`);
+    return;
+  }
+  if (r.behind === 0 || !r.head) return;
+  if (getSetting(NOTIFIED_HEAD_KEY) === r.head) return; // already told them about this one
+  setSetting(NOTIFIED_HEAD_KEY, r.head);
+
+  const url = getDashboardUrl();
+  const list = r.commits
+    .slice(0, 5)
+    .map((c) => `• <code>${escapeHtml(c.sha)}</code> ${escapeHtml(c.subject)}`)
+    .join('\n');
+  const more = r.behind > 5 ? `\n…and ${r.behind - 5} more` : '';
+  const text = [
+    `🆕 <b>Relay update available</b> — ${r.behind} new commit${r.behind === 1 ? '' : 's'}:`,
+    list + more,
+    '',
+    `Send /update to install (pull → build → restart)${url ? `, or use the dashboard:\n${escapeHtml(url)}/#updates` : '.'}`,
+  ].join('\n');
+  const sent = await sendTelegram(text);
+  logMessage({
+    direction: 'out',
+    text: `[updater] ${text}`,
+    session_id: null,
+    ok: sent.ok,
+    error: sent.ok ? null : (sent.error ?? null),
+  });
+  if (!sent.ok) console.error(`[updater] update notice failed: ${sent.error}`);
+}
+
+export function startUpdateAutoCheck(): void {
+  const tick = () =>
+    void autoCheckForUpdates().catch((err) => console.error('[updater] auto-check crashed:', err));
+  setTimeout(tick, 45_000);
+  setInterval(tick, AUTO_CHECK_MS);
 }
 
 /** Kick off bin/safe-update-relay, detached so it survives the pm2 restart. */

@@ -11,8 +11,9 @@ import {
   type Job,
   type Status,
   type UpdateInfo,
+  type UpdateCheckRecord,
 } from '../api';
-import { AgentAuth, AuthStatusStrip } from '../components/AgentAuth';
+import { AgentAuth, AuthStatusStrip, timeAgo } from '../components/AgentAuth';
 import { Nav } from '../components/Nav';
 
 type Props = { status: Status; onChange: () => void };
@@ -42,12 +43,11 @@ export function Dashboard({ status, onChange }: Props) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Telegram re-auth messages link to …/#auth; React renders after the browser's
-  // own anchor jump, so do the scroll ourselves once the page is up.
+  // Telegram messages deep-link to sections (…/#auth, …/#updates); React
+  // renders after the browser's own anchor jump, so scroll once the page is up.
   useEffect(() => {
-    if (window.location.hash === '#auth') {
-      document.getElementById('auth')?.scrollIntoView({ block: 'start' });
-    }
+    const id = window.location.hash.slice(1);
+    if (id) document.getElementById(id)?.scrollIntoView({ block: 'start' });
   }, []);
 
   // Newest events render at the top. Keep the view pinned there as they stream
@@ -195,7 +195,10 @@ export function Dashboard({ status, onChange }: Props) {
         </div>
       </header>
 
-      <AuthStatusStrip engine={status.engine} label={engineLabel} />
+      <div className="space-y-2">
+        <AuthStatusStrip engine={status.engine} label={engineLabel} />
+        <UpdateStatusStrip />
+      </div>
 
       {error && (
         <div className="bg-red-950/40 border border-red-900/60 text-red-200 rounded p-3 text-sm">
@@ -272,6 +275,13 @@ export function Dashboard({ status, onChange }: Props) {
         </div>
       </section>
 
+      <section id="updates" className="scroll-mt-6">
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Updates
+        </h2>
+        <UpdateCard />
+      </section>
+
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Persona
@@ -295,13 +305,6 @@ export function Dashboard({ status, onChange }: Props) {
           botUsername={status.bot?.username ?? null}
           onChange={onChange}
         />
-      </section>
-
-      <section>
-        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
-          Updates
-        </h2>
-        <UpdateCard />
       </section>
 
       <section>
@@ -964,9 +967,87 @@ function displayHost(url: string): string {
   }
 }
 
+/**
+ * One-line relay version health for the top of the dashboard, fed by the
+ * relay's own periodic check (no click needed). Quiet when current; a banner
+ * pointing at the Updates section when a new version is waiting.
+ */
+function UpdateStatusStrip() {
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+
+  useEffect(() => {
+    let stopped = false;
+    const load = () =>
+      api
+        .updateInfo()
+        .then((r) => {
+          if (!stopped) setInfo(r);
+        })
+        .catch(() => {});
+    load();
+    const id = window.setInterval(load, 60_000);
+    window.addEventListener('focus', load);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+      window.removeEventListener('focus', load);
+    };
+  }, []);
+
+  if (!info) return null;
+  const check = info.check;
+
+  if (info.running) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-zinc-400">
+        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+        Relay update in progress…
+      </div>
+    );
+  }
+
+  if (check && check.behind > 0) {
+    return (
+      <div className="rounded-lg border border-blue-900/60 bg-blue-950/40 text-blue-100 p-4 flex items-start justify-between gap-4">
+        <div className="text-sm space-y-1">
+          <div className="font-medium">
+            🆕 Relay update available — {check.behind} new commit{check.behind === 1 ? '' : 's'}.
+          </div>
+          <div className="text-blue-200/70 text-xs truncate">
+            {check.commits[0] ? `Latest: ${check.commits[0].subject}` : ''}
+            {check.commits[0] ? ' · ' : ''}checked {timeAgo(check.checked_at)}
+          </div>
+        </div>
+        <a
+          href="#updates"
+          className="shrink-0 px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-sm font-medium"
+        >
+          Update ↓
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-zinc-500">
+      <span
+        className={['w-1.5 h-1.5 rounded-full', check && !check.error ? 'bg-emerald-400' : 'bg-zinc-600'].join(' ')}
+      />
+      <span>
+        Relay {info.current ? <code className="text-zinc-400">{info.current.sha}</code> : 'version unknown'}
+        {check
+          ? check.error
+            ? ` · update check failed ${timeAgo(check.checked_at)}`
+            : ` · up to date · checked ${timeAgo(check.checked_at)}`
+          : ' · checking for updates shortly…'}
+      </span>
+    </div>
+  );
+}
+
 function UpdateCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
-  const [check, setCheck] = useState<{ behind: number; commits: CommitInfo[] } | null>(null);
+  const [check, setCheck] = useState<UpdateCheckRecord | null>(null);
   const [checking, setChecking] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -976,6 +1057,9 @@ function UpdateCard() {
     try {
       const r = await api.updateInfo();
       setInfo(r);
+      // The relay checks upstream on its own (boot + every few hours); show
+      // that result right away instead of waiting for a click.
+      if (r.check) setCheck(r.check);
       // A restart may have happened while this page was open — an update
       // "running" per the state file means we should be in the polling UI.
       if (r.running) setUpdating(true);
@@ -987,6 +1071,13 @@ function UpdateCard() {
 
   useEffect(() => {
     loadInfo();
+    // Pick up background checks (and a version change after an update) while
+    // the page sits open.
+    const id = window.setInterval(() => {
+      if (!updating) loadInfo();
+    }, 60_000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const runCheck = async () => {
@@ -994,7 +1085,7 @@ function UpdateCard() {
     setChecking(true);
     try {
       const r = await api.updateCheck();
-      setCheck({ behind: r.behind, commits: r.commits });
+      setCheck({ behind: r.behind, commits: r.commits, head: r.head, checked_at: r.checked_at });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1096,11 +1187,15 @@ function UpdateCard() {
         <>
           {check &&
             (check.behind === 0 ? (
-              <p className="text-emerald-400">Up to date.</p>
+              <p className="text-emerald-400">
+                Up to date.
+                <span className="text-zinc-500"> Checked {timeAgo(check.checked_at)}.</span>
+              </p>
             ) : (
               <div className="space-y-1">
                 <p className="text-zinc-200">
-                  Update available — {check.behind} commit{check.behind === 1 ? '' : 's'} behind:
+                  Update available — {check.behind} commit{check.behind === 1 ? '' : 's'} behind
+                  <span className="text-zinc-500"> (checked {timeAgo(check.checked_at)})</span>:
                 </p>
                 <ul className="text-xs text-zinc-400 space-y-0.5">
                   {check.commits.map((c) => (
@@ -1118,7 +1213,15 @@ function UpdateCard() {
               deployed.
             </p>
           )}
+          {check?.error && (
+            <p className="text-amber-300/80 text-xs">Last automatic check failed: {check.error}</p>
+          )}
           {outcome && <p className="text-zinc-500 text-xs">{outcome}</p>}
+          <p className="text-zinc-600 text-xs">
+            The relay checks for new versions on its own — shortly after it starts and every 6
+            hours — and messages you on Telegram once per new version (reply{' '}
+            <code>/update</code> to install).
+          </p>
         </>
       )}
 
