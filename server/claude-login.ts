@@ -19,8 +19,9 @@
  * Only one login runs at a time.
  */
 import { homedir } from 'node:os';
-import { setOauthToken } from './engine.ts';
+import { getAuthConfig, saveAuthProbe, setOauthToken } from './engine.ts';
 import { claudeAuthStatus } from './claude-runner.ts';
+import { invalidateCredentialCache } from './claude-credentials.ts';
 
 /**
  * Env for the interactive CLI. pm2 runs the relay with a stripped environment
@@ -179,6 +180,10 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
             // any legacy setup-token from the DB so runs and auth probes stop
             // overriding the machine-wide login.
             setOauthToken('claude', '');
+            // A fresh login is proof of auth: flip the cached status now (even
+            // if nobody is looking at the dashboard) and re-read the new expiry.
+            saveAuthProbe('claude', { authed: true, ...getAuthConfig('claude') });
+            invalidateCredentialCache();
             s.state = 'done';
           } else if (
             /OAuth error:|Invalid code|expired|Press Enter to retry|Login failed/i.test(clean)

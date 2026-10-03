@@ -25,13 +25,21 @@ export type AuthProbe = {
   error?: string;
   checked_at: number;
 };
-export type AuthConfig = { method: AuthMethod; hasKey: boolean; last?: AuthProbe | null };
+export type AuthConfig = {
+  method: AuthMethod;
+  hasKey: boolean;
+  last?: AuthProbe | null;
+  /** When the host's subscription sign-in lapses (ms epoch); null/absent if
+   *  unknown or not applicable (API key, legacy token). */
+  login_expires_at?: number | null;
+};
 export type EngineAuth = {
   authed: boolean;
   method: AuthMethod;
   hasKey: boolean;
   error?: string;
   checked_at?: number;
+  login_expires_at?: number | null;
 };
 
 export type PersonaInfo = {

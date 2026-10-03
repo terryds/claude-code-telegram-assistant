@@ -6,7 +6,8 @@ import type {
   EngineResult,
   OnStep,
 } from './engine.ts';
-import { ENGINE_LABELS, authEnv, getApiKey, getAuthMethod } from './engine.ts';
+import { ENGINE_LABELS, authEnv, getApiKey, getAuthMethod, usesHostLogin } from './engine.ts';
+import { describeDeadline, readClaudeCredential } from './claude-credentials.ts';
 import { watchSession } from './claude-stream.ts';
 
 // Kept as aliases for back-compat with existing imports across the server.
@@ -207,7 +208,10 @@ export type ClaudeAuthStatus = { loggedIn: boolean; authMethod?: string };
  * Read the CLI's auth status cheaply via `claude auth status --json` (no billed
  * request). Injects the engine's configured auth env so a saved API key / OAuth
  * token is reflected. Note: this reports whether a credential is *configured*,
- * not that it is still valid — a present-but-bad key reads as logged in.
+ * not that it is still valid — a present-but-bad key, or an OAuth login whose
+ * refresh token has lapsed, still reads as logged in. `checkClaudeAuth` layers
+ * the credential's own expiry on top; real run outcomes (tg-listener) are the
+ * final word.
  */
 export async function claudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
   try {
@@ -242,7 +246,22 @@ export async function checkClaudeAuth(): Promise<EngineAuth> {
   if (!status) {
     return { authed: false, method, hasKey, error: "Couldn't read `claude auth status`." };
   }
-  if (status.loggedIn) return { authed: true, method, hasKey };
+  if (status.loggedIn) {
+    // `auth status` can't see that the OAuth refresh token has lapsed — but the
+    // credential records when it does, and past that point every run fails.
+    if (usesHostLogin('claude')) {
+      const cred = await readClaudeCredential(true);
+      if (cred?.loginExpiresAt && cred.loginExpiresAt <= Date.now()) {
+        return {
+          authed: false,
+          method,
+          hasKey,
+          error: `Sign-in expired on ${describeDeadline(cred.loginExpiresAt)}: the OAuth refresh token lapsed, so the CLI can no longer renew its session. Sign in again below.`,
+        };
+      }
+    }
+    return { authed: true, method, hasKey };
+  }
   return {
     authed: false,
     method,

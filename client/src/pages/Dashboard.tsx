@@ -12,7 +12,7 @@ import {
   type Status,
   type UpdateInfo,
 } from '../api';
-import { AgentAuth } from '../components/AgentAuth';
+import { AgentAuth, AuthStatusStrip } from '../components/AgentAuth';
 import { Nav } from '../components/Nav';
 
 type Props = { status: Status; onChange: () => void };
@@ -40,6 +40,14 @@ export function Dashboard({ status, onChange }: Props) {
     loadFeed();
     const id = window.setInterval(loadFeed, 3000);
     return () => window.clearInterval(id);
+  }, []);
+
+  // Telegram re-auth messages link to …/#auth; React renders after the browser's
+  // own anchor jump, so do the scroll ourselves once the page is up.
+  useEffect(() => {
+    if (window.location.hash === '#auth') {
+      document.getElementById('auth')?.scrollIntoView({ block: 'start' });
+    }
   }, []);
 
   // Newest events render at the top. Keep the view pinned there as they stream
@@ -187,6 +195,8 @@ export function Dashboard({ status, onChange }: Props) {
         </div>
       </header>
 
+      <AuthStatusStrip engine={status.engine} label={engineLabel} />
+
       {error && (
         <div className="bg-red-950/40 border border-red-900/60 text-red-200 rounded p-3 text-sm">
           {error}
@@ -251,6 +261,17 @@ export function Dashboard({ status, onChange }: Props) {
         </button>
       </section>
 
+      <section id="auth" className="scroll-mt-6">
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          {engineLabel} authentication
+        </h2>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5">
+          {/* Re-mount when the active engine changes so config reloads. No
+              auto-probe: the cached status is kept truthful by real runs. */}
+          <AgentAuth key={status.engine} engine={status.engine} autoProbe={false} />
+        </div>
+      </section>
+
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Persona
@@ -274,17 +295,6 @@ export function Dashboard({ status, onChange }: Props) {
           botUsername={status.bot?.username ?? null}
           onChange={onChange}
         />
-      </section>
-
-      <section>
-        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
-          {engineLabel} authentication
-        </h2>
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5">
-          {/* Re-mount when the active engine changes so config reloads. Skip the
-              auto-probe here — probing costs a request; the user clicks Check. */}
-          <AgentAuth key={status.engine} engine={status.engine} autoProbe={false} />
-        </div>
       </section>
 
       <section>

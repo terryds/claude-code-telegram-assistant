@@ -171,6 +171,28 @@ export function getAuthConfig(id: EngineId): AuthConfig {
   return { method: getAuthMethod(id), hasKey: Boolean(getApiKey(id)) };
 }
 
+/**
+ * True when runs depend on the host CLI's own subscription sign-in (as opposed
+ * to an injected API key or legacy setup-token) — i.e. when that login's
+ * expiry is what decides whether the relay works.
+ */
+export function usesHostLogin(id: EngineId): boolean {
+  return getAuthMethod(id) === 'subscription' && !getOauthToken(id);
+}
+
+/**
+ * Run errors that mean the CLI's credentials are dead, not that the turn
+ * itself failed. Covers the CLI's sign-out wording across versions:
+ * "Not logged in · Please run /login", "Failed to authenticate: OAuth session
+ * expired and could not be refreshed", 401s, bad API keys.
+ */
+export const AUTH_ERROR_RE =
+  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized|oauth session expired|could not be refreshed|failed to authenticate|oauth_no_inference_scope/i;
+
+export function isAuthError(error: string): boolean {
+  return AUTH_ERROR_RE.test(error);
+}
+
 // ── Cached auth probe ───────────────────────────────────────────────
 //
 // A live probe is slow and consumes a real request, so the dashboard shouldn't

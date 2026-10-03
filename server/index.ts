@@ -87,6 +87,8 @@ import {
   skipBacklog,
 } from './tg-listener.ts';
 import { setDashboardPort } from './dashboard-url.ts';
+import { hostLoginExpiresAt } from './claude-credentials.ts';
+import { startAuthExpiryWatch } from './auth-watch.ts';
 import {
   getStepCleanupSeconds,
   setStepCleanupSeconds,
@@ -170,6 +172,18 @@ function stripHtml(html: string): string {
 /** The slice of Bun.Server the API needs (the full type is generic across bun-types versions). */
 type RequestIPServer = { requestIP(req: Request): { address: string } | null };
 
+/**
+ * Auth setup + the cached status + when the host sign-in lapses — everything
+ * the dashboard needs to render auth state without running a probe.
+ */
+async function authSummary(id: Parameters<typeof getAuthConfig>[0]) {
+  return {
+    ...getAuthConfig(id),
+    last: getLastAuthProbe(id),
+    login_expires_at: await hostLoginExpiresAt(),
+  };
+}
+
 async function handleApi(req: Request, url: URL, server?: RequestIPServer): Promise<Response> {
   const p = url.pathname.replace(/^\/api/, '') || '/';
   const m = req.method;
@@ -250,7 +264,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
       groups: listGroupLinks(),
       engine: getEngineId(),
       engines: ENGINE_IDS.map((id) => ({ id, label: ENGINE_LABELS[id] })),
-      auth: { ...getAuthConfig(getEngineId()), last: getLastAuthProbe(getEngineId()) },
+      auth: await authSummary(getEngineId()),
     });
   }
 
@@ -272,7 +286,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     // Cache the outcome so the dashboard can show auth state without
     // re-probing on every load.
     const rec = saveAuthProbe(id, result);
-    return json({ ...result, checked_at: rec.checked_at });
+    return json({ ...result, checked_at: rec.checked_at, login_expires_at: await hostLoginExpiresAt() });
   }
 
   // Read the persisted auth setup (method + whether a key is saved) and the
@@ -281,7 +295,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   if (p === '/auth-config' && m === 'GET') {
     const q = url.searchParams.get('engine');
     const id = q && isEngineId(q) ? q : getEngineId();
-    return json({ ...getAuthConfig(id), last: getLastAuthProbe(id) });
+    return json(await authSummary(id));
   }
 
   // Update auth setup: switch method and/or save (or clear) the API key.
@@ -747,6 +761,7 @@ function serveStatic(url: URL): Response {
 startListener();
 startJobScheduler();
 startStepCleanupSweeper();
+startAuthExpiryWatch();
 
 // Refresh the Telegram command menu on boot so deploys pick up command changes.
 // (Otherwise setMyCommands only runs when the relay is toggled on, leaving the

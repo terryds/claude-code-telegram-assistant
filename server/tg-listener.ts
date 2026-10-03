@@ -30,6 +30,9 @@ import {
   getEngineId,
   setEngineId,
   isEngineId,
+  isAuthError,
+  getAuthConfig,
+  saveAuthProbe,
   type AskQuestion,
   type EngineResult,
   type EngineStep,
@@ -512,6 +515,9 @@ async function deliverResult(
 ): Promise<void> {
   if (result.ok) {
     if (result.session_id) setSetting(sessionKey, result.session_id);
+    // A completed turn is proof the CLI is authenticated. Write it back so the
+    // dashboard's cached status stays truthful without anyone clicking Check.
+    saveAuthProbe(getEngineId(), { authed: true, ...getAuthConfig(getEngineId()) });
     // Claude asked a question. Headless mode auto-cancels it, so the result
     // text is just a "question canceled" notice — suppress that and instead
     // show the question + options as text. The user answers by typing back,
@@ -554,30 +560,36 @@ async function deliverResult(
   // Aborted runs were stopped on purpose; the /stop or replacement message
   // already acknowledged that, so don't surface a scary error.
   if (result.aborted) return;
+  if (isAuthError(result.error)) {
+    // The run is the ground truth: flip the dashboard's cached status to
+    // signed-out now, so it stops claiming "Authenticated" from a stale probe.
+    const id = getEngineId();
+    saveAuthProbe(id, { authed: false, ...getAuthConfig(id), error: result.error });
+  }
   await sendTelegram(formatRunError(result.error), { target });
 }
 
-// The CLI's raw sign-out error ("Not logged in · Please run /login") is
-// misleading over Telegram: /login reads like a bot command, and the user
-// isn't at a terminal anyway. Turn it into re-auth steps with a dashboard
-// link they can tap from their phone.
-const AUTH_ERROR_RE =
-  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized/i;
-
-function formatRunError(error: string): string {
+// The CLI's raw sign-out errors ("Not logged in · Please run /login",
+// "Failed to authenticate: OAuth session expired and could not be refreshed")
+// are dead ends over Telegram: /login reads like a bot command, and the user
+// isn't at a terminal anyway. Turn them into the actual fix — a link straight
+// to the dashboard's auth section they can tap from their phone.
+export function formatRunError(error: string): string {
   const engine = getEngineId();
   const label = ENGINE_LABELS[engine];
-  if (!AUTH_ERROR_RE.test(error)) {
+  if (!isAuthError(error)) {
     return `⚠️ <b>${escapeHtml(label)} error</b>\n${escapeHtml(error)}`;
   }
   const url = getDashboardUrl();
-  const signIn = 'Sign in with Claude';
   return [
-    `⚠️ <b>${escapeHtml(label)} got signed out</b>`,
-    'To sign back in from the dashboard:',
-    url ? `1. Open ${escapeHtml(url)}` : '1. Open the dashboard in your browser',
-    `2. Under “${escapeHtml(label)} authentication”, tap <b>Check now</b>`,
-    `3. Tap <b>${escapeHtml(signIn)}</b> and authorize`,
+    `⛔ <b>${escapeHtml(label)} is signed out</b>`,
+    `<i>${escapeHtml(error)}</i>`,
+    '',
+    "I can't answer messages until you sign in again — about 30 seconds from your phone:",
+    url
+      ? `1. Open the dashboard:\n${escapeHtml(url)}/#auth`
+      : `1. Open the dashboard → “${escapeHtml(label)} authentication”`,
+    '2. Tap <b>Sign in with Claude</b> and authorize (the dashboard finishes on its own).',
   ].join('\n');
 }
 
