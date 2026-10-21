@@ -42,6 +42,32 @@ for s in "${REQUIRED_SKILLS[@]}"; do
 done
 
 echo
+echo "Host:"
+mem_avail=""
+if [ -r /proc/meminfo ]; then
+  mem_avail="$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024 }' /proc/meminfo)"
+  mem_total="$(awk '/^MemTotal:/ { printf "%d", $2 / 1024 }' /proc/meminfo)"
+  swap_total="$(awk '/^SwapTotal:/ { printf "%d", $2 / 1024 }' /proc/meminfo)"
+  low_mb="${LOW_MEMORY_MB:-512}"
+  if [ -n "$mem_avail" ] && [ "$mem_avail" -lt "$low_mb" ]; then
+    printf '  %s!%s memory   %s MB available of %s MB — below LOW_MEMORY_MB=%s; run bin/preview list / pm2 ls\n' "$C_WARN" "$C_RST" "$mem_avail" "$mem_total" "$low_mb"
+  else
+    printf '  %s✓%s memory   %s MB available of %s MB\n' "$C_OK" "$C_RST" "${mem_avail:-?}" "${mem_total:-?}"
+  fi
+  if [ "${swap_total:-0}" -eq 0 ]; then
+    printf '  %s•%s swap     none — an OOM is abrupt instead of gradual; consider a swapfile\n' "$C_WARN" "$C_RST"
+  else
+    printf '  %s✓%s swap     %s MB\n' "$C_OK" "$C_RST" "$swap_total"
+  fi
+else
+  printf '  %s•%s memory   %snot Linux — no /proc/meminfo (relay guard uses vm_stat on macOS, is off elsewhere)%s\n' "$C_DIM" "$C_RST" "$C_DIM" "$C_RST"
+fi
+if have pm2 && have jq; then
+  n_prev="$(jq 'length' "$DIR/../data/previews.json" 2>/dev/null || echo 0)"
+  printf '  %s•%s previews %s registered via bin/preview (PREVIEW_MAX=%s)\n' "$C_DIM" "$C_RST" "$n_prev" "${PREVIEW_MAX:-4}"
+fi
+
+echo
 if [ "$missing" -gt 0 ]; then
   echo "${C_BAD}${missing} dependency(ies) missing.${C_RST} Run: ${DIR}/install"
 fi

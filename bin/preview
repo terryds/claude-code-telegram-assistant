@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# preview start <name> [--cwd <dir>] [--port <n>] [--ttl <dur>] [--max-mem <size>] [--force] -- <command…>
+# preview stop <name>
+# preview list
+# preview gc [--all] [--older-than <dur>]
+# preview check
+#
+# Run throwaway app servers (PR previews, demos, "let me see it running")
+# under pm2 WITHOUT letting them pile up. Every preview the agent starts goes
+# through here so that:
+#   - names are deterministic (`preview-<name>`): re-deploying the same thing
+#     restarts the existing process instead of adding a sibling;
+#   - each one gets a TTL (default 3d) and a pm2 memory cap (default 512M);
+#   - `start` refuses when the host is low on memory or already runs the
+#     maximum number of previews — stop/gc something first (or --force);
+#   - `gc` reaps expired ones; `list` shows what's running and how old it is.
+#
+# Options for start:
+#   --cwd <dir>       working directory (default: current directory)
+#   --port <n>        exported as PORT to the command; also shown in `list`
+#   --ttl <dur>       lifetime before `gc` reaps it: 90m, 12h, 3d (default 3d)
+#   --max-mem <size>  pm2 --max-memory-restart value (default 512M)
+#   --force           skip the memory / count guards
+#   -- <command…>     what to run, e.g. -- bun run dev  (or a single quoted string)
+#
+# Env: PREVIEW_MIN_FREE_MB (default 512) refuses starts below this much
+# available RAM; PREVIEW_MAX (default 4) caps concurrent previews; RELAY_DB /
+# the repo's data/ dir hold the registry (data/previews.json).
+#
+# Exit codes: 0 ok · 1 usage/pm2 error · 2 refused by a guard (low memory or
+# too many previews — the message says what to stop).
+
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="$(dirname "${RELAY_DB:-$REPO_DIR/data/app.db}")"
+REGISTRY="$DATA_DIR/previews.json"
+MIN_FREE_MB="${PREVIEW_MIN_FREE_MB:-512}"
+MAX_PREVIEWS="${PREVIEW_MAX:-4}"
+DEFAULT_TTL="3d"
+DEFAULT_MAX_MEM="512M"
+
+usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die() { echo "preview: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required (bin/install installs it)"; }
+need jq; need pm2
+
+mkdir -p "$DATA_DIR"
+[ -s "$REGISTRY" ] || echo '[]' > "$REGISTRY"
+
+# ── helpers ───────────────────────────────────────────────────────────
+
+# "90m" / "12h" / "3d" / "3600" → seconds
+dur_to_sec() {
+  local d="$1" n unit
+  n="${d%[smhd]}"; unit="${d#"$n"}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "bad duration: $d (use e.g. 90m, 12h, 3d)"
+  case "$unit" in
+    ""|s) echo "$n" ;; m) echo $((n * 60)) ;; h) echo $((n * 3600)) ;; d) echo $((n * 86400)) ;;
+  esac
+}
+
+# seconds → "3d 4h" style
+fmt_age() {
+  local s="$1"
+  if [ "$s" -ge 86400 ]; then echo "$((s / 86400))d $(((s % 86400) / 3600))h"
+  elif [ "$s" -ge 3600 ]; then echo "$((s / 3600))h $(((s % 3600) / 60))m"
+  else echo "$((s / 60))m"; fi
+}
+
+# Available memory in MiB — Linux MemAvailable (what a new process can really
+# get), macOS vm_stat as a dev fallback. Prints nothing when unknown.
+mem_available_mb() {
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024; found=1 } END { if (!found) exit 1 }' /proc/meminfo && return
+    awk '/^MemFree:|^Cached:|^SReclaimable:/ { s += $2 } END { printf "%d\n", s / 1024 }' /proc/meminfo
+  elif command -v vm_stat >/dev/null 2>&1; then
+    vm_stat | awk '
+      /page size of/ { ps = $8 }
+      /Pages free|Pages inactive|Pages speculative/ { gsub(/\./, "", $NF); p += $NF }
+      END { printf "%d\n", p * ps / 1048576 }'
+  fi
+}
+
+mem_total_mb() {
+  if [ -r /proc/meminfo ]; then awk '/^MemTotal:/ { printf "%d\n", $2 / 1024 }' /proc/meminfo
+  elif command -v sysctl >/dev/null 2>&1; then sysctl -n hw.memsize 2>/dev/null | awk '{ printf "%d\n", $1 / 1048576 }'
+  fi
+}
+
+# Normalise to a pm2-safe `preview-<slug>` name.
+normalize_name() {
+  local n
+  n="$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//')"
+  [ -n "$n" ] || die "empty preview name"
+  case "$n" in preview-*) echo "$n" ;; *) echo "preview-$n" ;; esac
+}
+
+# pm2 jlist as JSON (empty array if pm2 is unresponsive — a starved box).
+# pm2_load fills PM2_JSON (pm2 jlist as compact JSON) and PM2_OK. PM2_OK=0
+# means pm2 didn't answer (absent, or the box is so starved it timed out) —
+# callers must NOT treat "not listed" as "dead" then.
+PM2_JSON='[]'; PM2_OK=1
+pm2_load() {
+  local out
+  if command -v timeout >/dev/null 2>&1; then out="$(timeout 10 pm2 jlist 2>/dev/null)"; else out="$(pm2 jlist 2>/dev/null)"; fi
+  out="$(sed -n '/^\[/,$p' <<<"$out" | jq -c '.' 2>/dev/null)"
+  if [ -n "$out" ]; then PM2_OK=1; PM2_JSON="$out"; else PM2_OK=0; PM2_JSON='[]'; fi
+}
+
+registry_names() { jq -r '.[].name' "$REGISTRY"; }
+registry_has() { jq -e --arg n "$1" 'any(.[]; .name == $n)' "$REGISTRY" >/dev/null; }
+registry_remove() {
+  local tmp; tmp="$(mktemp)"
+  jq --arg n "$1" 'map(select(.name != $n))' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+}
+registry_add() { # name cwd port command ttl_sec max_mem
+  local tmp; tmp="$(mktemp)"
+  jq --arg n "$1" --arg cwd "$2" --arg port "$3" --arg cmd "$4" --argjson ttl "$5" --arg mm "$6" \
+     --argjson now "$(date +%s)" \
+     'map(select(.name != $n)) + [{name:$n, cwd:$cwd, port:$port, command:$cmd, ttl_sec:$ttl, max_mem:$mm, created_at:$now}]' \
+     "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+}
+
+pm2_delete() { pm2 delete "$1" >/dev/null 2>&1 || true; }
+pm2_save() { pm2 save >/dev/null 2>&1 || true; }
+
+# ── commands ──────────────────────────────────────────────────────────
+
+cmd_check() {
+  local avail total
+  avail="$(mem_available_mb)"; total="$(mem_total_mb)"
+  if [ -z "$avail" ]; then echo "memory: unknown (no /proc/meminfo or vm_stat)"; return 0; fi
+  if [ "$avail" -lt "$MIN_FREE_MB" ]; then
+    echo "LOW MEMORY: ${avail} MB available of ${total:-?} MB (threshold ${MIN_FREE_MB} MB)."
+    echo "Stop something before starting a new process — \`bin/preview list\`, \`bin/preview gc\`, or \`pm2 ls\`."
+    return 2
+  fi
+  echo "memory ok: ${avail} MB available of ${total:-?} MB (threshold ${MIN_FREE_MB} MB)"
+}
+
+cmd_list() {
+  local pm2json now
+  pm2_load; local pm2json="$PM2_JSON"; now="$(date +%s)"
+  local count; count="$(jq 'length' "$REGISTRY")"
+  if [ "$count" -eq 0 ]; then echo "no previews registered (max $MAX_PREVIEWS)"; else
+    echo "previews ($count of max $MAX_PREVIEWS):"
+    # (empty fields would collapse under a tab IFS, so port is "-" when unset)
+    jq -r '.[] | [.name, (.port | if . == "" then "-" else . end), .created_at, .ttl_sec, .cwd] | @tsv' "$REGISTRY" |
+    while IFS=$'\t' read -r name port created ttl cwd; do
+      local age=$((now - created)) left=$((created + ttl - now)) status mem
+      status="$(jq -r --arg n "$name" '[.[] | select(.name == $n)][0] | .pm2_env.status // "not in pm2"' <<<"$pm2json")"
+      mem="$(jq -r --arg n "$name" '[.[] | select(.name == $n)][0] | (.monit.memory // 0) / 1048576 | floor' <<<"$pm2json")"
+      local ttl_txt; if [ "$left" -le 0 ]; then ttl_txt="EXPIRED"; else ttl_txt="expires in $(fmt_age "$left")"; fi
+      printf '  %-28s %-9s %4s MB  port %-5s age %-8s %s  %s\n' \
+        "$name" "$status" "$mem" "$port" "$(fmt_age "$age")" "$ttl_txt" "$cwd"
+    done
+  fi
+  # pm2 processes named preview-* that this tool doesn't know about.
+  local orphans
+  orphans="$(jq -r --argjson reg "$(jq -c '[.[].name]' "$REGISTRY")" \
+    '.[] | select(.name | startswith("preview-")) | select(.name as $n | $reg | index($n) | not) | .name' <<<"$pm2json")"
+  if [ -n "$orphans" ]; then
+    echo "unregistered pm2 previews (started outside bin/preview; \`bin/preview gc --all\` removes them):"
+    echo "$orphans" | sed 's/^/  /'
+  fi
+  cmd_check || true
+}
+
+cmd_stop() {
+  local name; name="$(normalize_name "${1:?stop needs a name}")"
+  pm2_load
+  if ! registry_has "$name" && ! jq -e --arg n "$name" 'any(.[]; .name == $n)' <<<"$PM2_JSON" >/dev/null; then
+    die "no preview named $name (see: bin/preview list)"
+  fi
+  pm2_delete "$name"; registry_remove "$name"; pm2_save
+  echo "stopped $name"
+}
+
+cmd_gc() {
+  local all=0 older="" now removed=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all) all=1; shift ;;
+      --older-than) older="$(dur_to_sec "${2:?--older-than needs a duration}")"; shift 2 ;;
+      *) die "gc: unknown option $1" ;;
+    esac
+  done
+  now="$(date +%s)"
+  pm2_load; local pm2json="$PM2_JSON"
+  [ "$PM2_OK" = 1 ] || echo "note: pm2 did not answer — only TTL-based reaping, nothing assumed dead" >&2
+  while IFS=$'\t' read -r name created ttl; do
+    [ -n "$name" ] || continue
+    local age=$((now - created)) reason=""
+    local alive; alive="$(jq -r --arg n "$name" 'any(.[]; .name == $n and .pm2_env.status == "online")' <<<"$pm2json")"
+    if [ "$all" = 1 ]; then reason="--all"
+    elif [ -n "$older" ] && [ "$age" -ge "$older" ]; then reason="older than $(fmt_age "$older")"
+    elif [ -z "$older" ] && [ "$age" -ge "$ttl" ]; then reason="TTL expired ($(fmt_age "$ttl"))"
+    elif [ "$PM2_OK" = 1 ] && [ "$alive" != "true" ]; then reason="no longer running in pm2"
+    fi
+    [ -n "$reason" ] || continue
+    pm2_delete "$name"; registry_remove "$name"; removed=$((removed + 1))
+    echo "removed $name — $reason (age $(fmt_age "$age"))"
+  done < <(jq -r '.[] | [.name, .created_at, .ttl_sec] | @tsv' "$REGISTRY")
+  if [ "$all" = 1 ]; then
+    # Also sweep preview-* processes started outside this tool.
+    while read -r name; do
+      [ -n "$name" ] || continue
+      pm2_delete "$name"; removed=$((removed + 1)); echo "removed $name — unregistered pm2 preview (--all)"
+    done < <(jq -r '.[] | select(.name | startswith("preview-")) | .name' <<<"$pm2json")
+  fi
+  [ "$removed" -gt 0 ] && pm2_save
+  echo "gc: removed $removed preview(s)"
+}
+
+cmd_start() {
+  local name="" cwd="$PWD" port="" ttl="$DEFAULT_TTL" max_mem="$DEFAULT_MAX_MEM" force=0 cmd=""
+  [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { name="$1"; shift; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd) cwd="${2:?--cwd needs a dir}"; shift 2 ;;
+      --port) port="${2:?--port needs a number}"; shift 2 ;;
+      --ttl) ttl="${2:?--ttl needs a duration}"; shift 2 ;;
+      --max-mem) max_mem="${2:?--max-mem needs a size}"; shift 2 ;;
+      --force) force=1; shift ;;
+      --) shift; cmd="$*"; break ;;
+      -*) die "start: unknown option $1" ;;
+      *) [ -z "$name" ] && { name="$1"; shift; } || die "start: unexpected argument $1 (put the command after --)" ;;
+    esac
+  done
+  [ -n "$name" ] || die "start needs a name:  bin/preview start <name> [opts] -- <command>"
+  [ -n "$cmd" ] || die "start needs a command after --, e.g.  -- bun run dev"
+  [ -d "$cwd" ] || die "cwd does not exist: $cwd"
+  cwd="$(cd "$cwd" && pwd)"
+  name="$(normalize_name "$name")"
+  local ttl_sec; ttl_sec="$(dur_to_sec "$ttl")"
+
+  # Reap expired previews first — they'd otherwise count against the cap.
+  cmd_gc | grep -v '^gc: removed 0' || true
+
+  local redeploy=0; registry_has "$name" && redeploy=1
+
+  if [ "$force" = 0 ]; then
+    local others; others="$(jq --arg n "$name" '[.[] | select(.name != $n)] | length' "$REGISTRY")"
+    if [ "$others" -ge "$MAX_PREVIEWS" ]; then
+      echo "REFUSED: $others previews already running (max $MAX_PREVIEWS). Oldest first:" >&2
+      jq -r --argjson now "$(date +%s)" 'sort_by(.created_at)[] | "  \(.name)  age \(($now - .created_at) / 3600 | floor)h"' "$REGISTRY" >&2
+      echo "Stop one (bin/preview stop <name>), run bin/preview gc, or pass --force." >&2
+      exit 2
+    fi
+    local avail; avail="$(mem_available_mb)"
+    if [ -n "$avail" ] && [ "$avail" -lt "$MIN_FREE_MB" ]; then
+      echo "REFUSED: only ${avail} MB RAM available (threshold ${MIN_FREE_MB} MB) — starting another server would starve the host." >&2
+      echo "Free memory first: bin/preview list / bin/preview gc / bin/preview stop <name>, or pm2 ls for non-preview processes. --force overrides." >&2
+      exit 2
+    fi
+  fi
+
+  # Same name → replace (cwd/command may have changed), never a sibling.
+  pm2_delete "$name"
+
+  local bash_bin; bash_bin="$(command -v bash)"
+  if ! ( cd "$cwd" && PORT="${port:-${PORT:-}}" pm2 start "$bash_bin" \
+          --name "$name" --cwd "$cwd" --interpreter none \
+          --max-memory-restart "$max_mem" --time -- -c "$cmd" >/dev/null ); then
+    die "pm2 start failed for $name (pm2 logs $name --lines 50)"
+  fi
+  registry_add "$name" "$cwd" "$port" "$cmd" "$ttl_sec" "$max_mem"
+  pm2_save
+
+  local host; host="$(hostname -f 2>/dev/null || hostname)"
+  echo "$([ "$redeploy" = 1 ] && echo "redeployed" || echo "started") $name  (cwd $cwd, ttl $ttl, max-mem $max_mem)"
+  [ -n "$port" ] && echo "url: http://$host:$port/   (bookmark only if it's a durable app, not a throwaway preview)"
+  echo "logs: pm2 logs $name --lines 50   ·   stop: bin/preview stop ${name#preview-}"
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "$@" ;;
+  stop)  shift; cmd_stop "$@" ;;
+  list|ls) cmd_list ;;
+  gc)    shift; cmd_gc "$@" ;;
+  check) cmd_check ;;
+  -h|--help|help|"") usage; [ -n "${1:-}" ] && exit 0 || exit 1 ;;
+  *) die "unknown command: $1 (start | stop | list | gc | check)" ;;
+esac

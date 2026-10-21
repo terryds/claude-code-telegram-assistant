@@ -41,6 +41,12 @@ import { currentEngine } from './engines.ts';
 import { queueStepMessageCleanup } from './step-cleanup.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
+import {
+  checkHostMemory,
+  formatLowMemoryContext,
+  formatLowMemoryWarning,
+  shouldWarnChat,
+} from './host-memory.ts';
 import { startUpdate } from './updater.ts';
 import { listSkills } from './skills.ts';
 import { nextRunAt, isJobRunning } from './jobs.ts';
@@ -463,6 +469,25 @@ function startEngineRun(
     const typing = setInterval(() => {
       sendChatAction('typing', target).catch(() => {});
     }, 4000);
+
+    // Host memory guard: a starved VM makes the run crawl or fail in ways
+    // that look like a dead bot. Warn the user (rate-limited per chat) and
+    // tell the agent what is hogging RAM so it can clean up. Never blocks —
+    // this very message may be the one asking for the cleanup.
+    try {
+      const mem = await checkHostMemory();
+      if (mem.low && !abort.signal.aborted) {
+        console.warn(
+          `[telegram] host low on memory: ${Math.round((mem.reading?.availableBytes ?? 0) / 1048576)} MB available`
+        );
+        if (shouldWarnChat(sessionKey)) {
+          await sendTelegramRich(formatLowMemoryWarning(mem), target);
+        }
+        prompt = `${formatLowMemoryContext(mem)}\n\n${prompt}`;
+      }
+    } catch (err) {
+      console.warn('[telegram] host memory check failed:', err);
+    }
 
     let result: EngineResult;
     try {

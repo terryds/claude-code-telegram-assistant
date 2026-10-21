@@ -455,6 +455,15 @@ Videos, round video notes, animations, and `video/*` documents work just like ph
 
 Any other document (`.csv`, `.md`, `.txt`, `.pdf`, spreadsheets, code, archives, …) works the same way: it's downloaded to `data/incoming/<file_unique_id>-<original name>` (the original filename is kept, sanitized) and the local path — plus the original name and MIME type — is appended to the prompt. Text files and PDFs are readable directly with Claude's `Read` tool; other formats are left to the agent's own tools. With no caption the agent is asked to summarize the file. The same 20 MB Telegram bot download limit applies.
 
+## Host memory guard and app previews
+
+A relay that spawns `claude -p` on a starved VM looks exactly like a dead bot: the process starts but crawls, HTTP calls time out, nothing comes back. Two guards keep that from happening silently:
+
+- **Before every run** the relay reads available memory (Linux `MemAvailable`; `vm_stat` on macOS; off elsewhere). Below `LOW_MEMORY_MB` (default `512`) it posts a warning to the chat naming the heaviest pm2 processes (at most once per 15 min per chat/topic) and prepends the same facts to the agent's prompt, so the agent cleans up instead of guessing why its tools are slow. The run is never blocked — the message asking for the cleanup must get through. Set `LOW_MEMORY_MB=0` to disable.
+- **`bin/preview`** is how the agent starts throwaway servers (PR previews, demos) under pm2: deterministic `preview-<name>` names so a re-deploy restarts instead of adding a sibling, a TTL (default 3 days), a pm2 memory cap (default 512M), and a refusal to start when memory is low (`PREVIEW_MIN_FREE_MB`, default 512) or `PREVIEW_MAX` (default 4) previews are already running. `bin/preview list`, `stop <name>`, `gc` (reap expired; `--all` for everything; `--older-than 12h`) and `check` (memory only; exit 2 when low) round it out. The registry lives in `data/previews.json`. `AGENTS.md` tells the agent to use it instead of bare `pm2 start`, and to bookmark only durable apps. For automatic reaping, register `bin/preview gc` as a scheduled job (`docs/scheduled-jobs.md`).
+
+`bin/doctor` prints the host's available memory and swap alongside the dependency checks.
+
 ## Notification gateway (`POST /api/notify`)
 
 Other apps on the same host can push Telegram alerts through the relay
@@ -494,7 +503,7 @@ Everything is stored in `data/app.db` (SQLite). Two tables:
 - `settings` — key/value store (bot token, chat ID, group link, session ID, relay enabled flag)
 - `message_log` — recent in/out messages shown on the dashboard
 
-Photos sent via Telegram land in `data/incoming/` (also gitignored). To wipe state, stop the process, delete `data/app.db*` and `data/incoming/`, and restart — or use **Reset everything** in the dashboard.
+Photos sent via Telegram land in `data/incoming/` (also gitignored). `data/previews.json` is `bin/preview`'s registry of running preview servers. To wipe state, stop the process, delete `data/app.db*` and `data/incoming/`, and restart — or use **Reset everything** in the dashboard.
 
 ## Security
 

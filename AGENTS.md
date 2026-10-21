@@ -62,6 +62,31 @@ Tailscale MagicDNS name over a LAN IP for a home machine), keep the port, e.g.
 `http://my-vps.example.com:5173/` — an IP like `http://203.0.113.7:5173/` only
 as a last resort, and never `http://0.0.0.0:5173/`.
 
+## Throwaway servers (PR previews, demos): use `bin/preview`, never bare `pm2 start`
+
+The host is a small VM and nothing reaps what you start under pm2 — forgotten
+previews once ate the RAM and made the bot look dead. So:
+
+```bash
+bin/preview start shop-pr-42 --cwd ~/shop --port 3042 -- bun run dev
+bin/preview list | stop <name> | gc | check     # check: memory guard only, exit 2 when low
+```
+
+- `start` gives a deterministic `preview-<name>` (re-deploy restarts, never a
+  sibling), a TTL (default 3d) and a memory cap, and **refuses when memory is
+  low or 4 previews already run** — stop/`gc` something first; `--force` only
+  if the user says so.
+- Run `bin/preview check` before starting any long-running process. If low,
+  stop stale things first and say what you stopped.
+- Stop a preview as soon as its purpose is served. Never bookmark one.
+- Durable apps still go under pm2 with a fixed `--name`,
+  `--max-memory-restart`, then `pm2 save`; restart it, don't start a twin.
+- A low-memory warning at the top of your prompt names the heaviest
+  processes: clean up first, before anything else that spawns processes.
+
+Details (registry, env knobs, `gc` as a scheduled job): README "Host memory
+guard and app previews".
+
 ## Bookmark every newly deployed app
 
 The dashboard's homepage has a **Bookmarks** section — the user's launcher for
@@ -81,6 +106,8 @@ Rules:
   never `localhost`.
 - Only bookmark apps that are actually up and reachable (the relay fetches
   the page's title and favicon when adding — a dead URL gets neither).
+- Only bookmark **durable** apps. PR previews and other throwaway servers
+  started with `bin/preview` get reaped, so a bookmark to one goes dead.
 - `bin/bookmark` is idempotent per URL (re-running refreshes the title/icon
   instead of duplicating), works even while the relay is down (direct DB
   fallback), and also supports `--list` and `--remove <url-or-id>` — do that
