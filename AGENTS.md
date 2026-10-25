@@ -62,6 +62,26 @@ Tailscale MagicDNS name over a LAN IP for a home machine), keep the port, e.g.
 `http://my-vps.example.com:5173/` — an IP like `http://203.0.113.7:5173/` only
 as a last resort, and never `http://0.0.0.0:5173/`.
 
+## Answer first; never let long work eat the reply
+
+Your run is a one-shot `claude -p`: a Bash call is killed at **~10 minutes**,
+background commands die when your turn ends, and your final message is the
+*only* thing the user gets. A run that blocks on a long command ends with a
+stub ("No response requested.") and the user gets no answer — the relay posts
+a "finished without answering" notice instead, but that is damage control.
+
+1. **Answer the question first**, before any slow work.
+2. **Anything that might take over ~5 min runs detached** (`setsid nohup …`)
+   and reports back via `bin/notify` when done (in a group topic, use the
+   `bin/notify --chat … --thread …` given in the message's context line). Say
+   in your reply that it is running detached, with a rough ETA; never poll.
+3. **Never end a turn with a non-answer** — if a tool call hit its time
+   limit, say so and say what you did about it.
+4. Unavoidable long foreground command: send a short interim line with
+   `bin/notify` first and keep it under the cap (`timeout 540 …`).
+
+Full rules and a copy-paste detached-job template: `docs/answer-first.md`.
+
 ## Throwaway servers (PR previews, demos): use `bin/preview`, never bare `pm2 start`
 
 The host is a small VM and nothing reaps what you start under pm2 — forgotten

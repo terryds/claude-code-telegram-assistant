@@ -40,6 +40,7 @@ import {
 import { currentEngine } from './engines.ts';
 import { queueStepMessageCleanup } from './step-cleanup.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
+import { formatNonAnswerNotice, isNonAnswer, looksLikeToolTimeout } from './reply-guard.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
 import {
   checkHostMemory,
@@ -460,7 +461,14 @@ function startEngineRun(
     // Persist every step for the dashboard feed, then forward it to Telegram.
     // Persisting first (and synchronously) keeps DB order correct even though
     // sendStep is throttled.
+    // Remember when a tool call was killed at its time cap: if the turn then
+    // ends without an answer, that is almost certainly why (see reply-guard).
+    let toolTimedOut = false;
+    const noteTimeout = (step: EngineStep) => {
+      if (step.kind === 'tool_result' && looksLikeToolTimeout(step.resultText)) toolTimedOut = true;
+    };
     const onStep = async (step: EngineStep) => {
+      noteTimeout(step);
       logStep(step, sessionId);
       await sendStep(step, target);
     };
@@ -510,6 +518,7 @@ function startEngineRun(
           { target }
         );
         const onFreshStep = async (step: EngineStep) => {
+          noteTimeout(step);
           logStep(step, null);
           await sendStep(step, target);
         };
@@ -520,7 +529,7 @@ function startEngineRun(
       if (activeRuns.get(sessionKey) === run) activeRuns.delete(sessionKey);
     }
 
-    await deliverResult(result, target, sessionKey);
+    await deliverResult(result, target, sessionKey, { toolTimedOut });
     // Hand off to the next queued prompt only after this run's reply went
     // out, so replies arrive in order. An aborted run never continues the
     // queue — /stop and replacement prompts clear it anyway.
@@ -536,7 +545,8 @@ function startEngineRun(
 async function deliverResult(
   result: EngineResult,
   target: SendTarget,
-  sessionKey: string
+  sessionKey: string,
+  runInfo: { toolTimedOut: boolean } = { toolTimedOut: false }
 ): Promise<void> {
   if (result.ok) {
     if (result.session_id) setSetting(sessionKey, result.session_id);
@@ -560,7 +570,32 @@ async function deliverResult(
       if (!r.ok) console.error(`[tg-listener] question send failed: ${r.error}`);
       return;
     }
-    const body = result.text || `(${ENGINE_LABELS[getEngineId()]} returned an empty response)`;
+    // The turn closed without a real reply (empty, or a stub like "No response
+    // requested." left behind after a long command hit the tool time cap).
+    // Posting the stub as if it were the answer looks like the bot ignored the
+    // user — say what happened instead. The session is still saved above, so
+    // "ask again" resumes with full context.
+    if (isNonAnswer(result.text)) {
+      console.warn(
+        `[tg-listener] run ended without an answer (${runInfo.toolTimedOut ? 'after a tool timeout' : 'no tool timeout seen'}): ${JSON.stringify(result.text.slice(0, 80))}`
+      );
+      const body = formatNonAnswerNotice({
+        text: result.text,
+        toolTimedOut: runInfo.toolTimedOut,
+        label: ENGINE_LABELS[getEngineId()],
+      });
+      const r = await sendTelegramRich(body, target);
+      logMessage({
+        direction: 'out',
+        text: body,
+        session_id: result.session_id,
+        ok: r.ok,
+        error: r.error ?? null,
+      });
+      if (!r.ok) console.error(`[tg-listener] non-answer notice send failed: ${r.error}`);
+      return;
+    }
+    const body = result.text;
     // Agent replies are GitHub-Flavored Markdown; rich messages render it
     // natively (falls back to plain text inside sendTelegramRich on rejection).
     const r = await sendTelegramRich(body, target);
@@ -1082,7 +1117,11 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
               : topicThreadId
           }`
         : '';
-    prompt = `(This message comes from the Telegram group "${title}"${topicPart} — your reply goes back there.)\n\n${prompt}`;
+    const notifyHint =
+      topicThreadId != null
+        ? `bin/notify --chat ${incomingChatId} --thread ${topicThreadId}`
+        : `bin/notify --chat ${incomingChatId}`;
+    prompt = `(This message comes from the Telegram group "${title}"${topicPart} — your reply goes back there. To message this conversation later, e.g. from a detached job, use \`${notifyHint}\`.)\n\n${prompt}`;
   }
 
   const running = activeRuns.has(sessionKey);
