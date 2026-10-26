@@ -64,11 +64,16 @@ as a last resort, and never `http://0.0.0.0:5173/`.
 
 ## Answer first; never let long work eat the reply
 
-Your run is a one-shot `claude -p`: a Bash call is killed at **~10 minutes**,
-background commands die when your turn ends, and your final message is the
-*only* thing the user gets. A run that blocks on a long command ends with a
-stub ("No response requested.") and the user gets no answer — the relay posts
-a "finished without answering" notice instead, but that is damage control.
+Your run is a one-shot `claude -p`: a Bash call is killed at **5 minutes**
+(the relay caps it; `timeout` won't buy more), background commands die when
+your turn ends, and your final message is the *only* thing the user gets.
+Worse, **any message the user sends while you are still working kills your
+run** — a nudge like "what took so long?" after six quiet minutes aborts the
+turn, nothing is posted, and the user is still waiting for the original
+answer (the replacement prompt then carries a relay note saying so — answer
+them with what you have). A run that blocks on a long command and ends with a
+stub ("No response requested.") gets a "finished without answering" notice
+from the relay instead, but that is damage control.
 
 1. **Answer the question first**, before any slow work.
 2. **Anything that might take over ~5 min runs detached** (`setsid nohup …`)
@@ -78,7 +83,7 @@ a "finished without answering" notice instead, but that is damage control.
 3. **Never end a turn with a non-answer** — if a tool call hit its time
    limit, say so and say what you did about it.
 4. Unavoidable long foreground command: send a short interim line with
-   `bin/notify` first and keep it under the cap (`timeout 540 …`).
+   `bin/notify` first and keep it under the cap (`timeout 240 …`).
 
 Full rules and a copy-paste detached-job template: `docs/answer-first.md`.
 

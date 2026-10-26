@@ -20,6 +20,26 @@ export type ClaudeCheck = EngineCheck;
 
 const CLAUDE_TIMEOUT_MS = Number(Bun.env.CLAUDE_TIMEOUT_MS || '0');
 
+/**
+ * Cap on a single Bash tool call inside a relay run. Claude Code's own cap is
+ * 10 minutes, which is long enough for an agent to sink a whole turn into one
+ * foreground command while the user waits with no reply. Five minutes matches
+ * the AGENTS.md rule ("anything that may exceed ~5 minutes runs detached") and
+ * hands the model a timeout error while it still has the context to detach the
+ * work and answer. RELAY_BASH_TIMEOUT_MS overrides; 0 disables the cap.
+ */
+const BASH_TIMEOUT_MS = Number(Bun.env.RELAY_BASH_TIMEOUT_MS ?? String(5 * 60_000));
+
+/** Env the CLI reads for its Bash tool limits; the host env wins if it sets them. */
+export function bashTimeoutEnv(): Record<string, string> {
+  if (!(BASH_TIMEOUT_MS > 0)) return {};
+  const ms = String(Math.round(BASH_TIMEOUT_MS));
+  return {
+    BASH_DEFAULT_TIMEOUT_MS: process.env.BASH_DEFAULT_TIMEOUT_MS ?? ms,
+    BASH_MAX_TIMEOUT_MS: process.env.BASH_MAX_TIMEOUT_MS ?? ms,
+  };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -51,7 +71,7 @@ export async function runClaudeHeadless(
       stderr: 'pipe',
       // Inject the saved API key when configured for API-key auth; otherwise
       // inherit the host env unchanged (subscription login lives in ~/.claude).
-      env: { ...process.env, ...authEnv('claude') },
+      env: { ...process.env, ...bashTimeoutEnv(), ...authEnv('claude') },
     });
   } catch (err) {
     return {
