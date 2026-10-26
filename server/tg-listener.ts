@@ -40,7 +40,12 @@ import {
 import { currentEngine } from './engines.ts';
 import { queueStepMessageCleanup } from './step-cleanup.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
-import { formatNonAnswerNotice, isNonAnswer, looksLikeToolTimeout } from './reply-guard.ts';
+import {
+  formatInterruptedRunNote,
+  formatNonAnswerNotice,
+  isNonAnswer,
+  looksLikeToolTimeout,
+} from './reply-guard.ts';
 import { getDashboardUrl } from './dashboard-url.ts';
 import {
   checkHostMemory,
@@ -335,7 +340,21 @@ async function sendStep(step: EngineStep, target: SendTarget): Promise<void> {
 // conversation, a `/stop` command — or a new prompt (auto-stop & replace) —
 // aborts that conversation's run only.
 
-type ActiveRun = { abort: AbortController };
+/**
+ * Repeated on every message because AGENTS.md alone has not been enough: an
+ * agent mid-task still sinks minutes into a foreground command and the user
+ * sits with no answer. Text in the user turn carries far more weight.
+ */
+const ANSWER_FIRST_HINT =
+  'Answer any question in this message before starting slow work; a command that may run longer ' +
+  'than a few minutes must be started detached and report back with bin/notify, never run in the foreground.';
+
+type ActiveRun = {
+  abort: AbortController;
+  startedAt: number;
+  /** Last tool call seen in the step stream, e.g. "Bash: yt-dlp …". */
+  lastTool: string | null;
+};
 const activeRuns = new Map<string, ActiveRun>();
 
 // ── Prompt queue ────────────────────────────────────────────────────
@@ -453,7 +472,7 @@ function startEngineRun(
   stopRun(sessionKey);
 
   const abort = new AbortController();
-  const run: ActiveRun = { abort };
+  const run: ActiveRun = { abort, startedAt: Date.now(), lastTool: null };
   activeRuns.set(sessionKey, run);
 
   void (async () => {
@@ -466,6 +485,9 @@ function startEngineRun(
     let toolTimedOut = false;
     const noteTimeout = (step: EngineStep) => {
       if (step.kind === 'tool_result' && looksLikeToolTimeout(step.resultText)) toolTimedOut = true;
+      if (step.kind === 'tool_use') {
+        run.lastTool = `${step.toolName ?? '?'}: ${truncate(step.toolInput ?? '', 200)}`;
+      }
     };
     const onStep = async (step: EngineStep) => {
       noteTimeout(step);
@@ -1121,7 +1143,9 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
       topicThreadId != null
         ? `bin/notify --chat ${incomingChatId} --thread ${topicThreadId}`
         : `bin/notify --chat ${incomingChatId}`;
-    prompt = `(This message comes from the Telegram group "${title}"${topicPart} — your reply goes back there. To message this conversation later, e.g. from a detached job, use \`${notifyHint}\`.)\n\n${prompt}`;
+    prompt = `(This message comes from the Telegram group "${title}"${topicPart} — your reply goes back there. To message this conversation later, e.g. from a detached job, use \`${notifyHint}\`. ${ANSWER_FIRST_HINT})\n\n${prompt}`;
+  } else {
+    prompt = `(${ANSWER_FIRST_HINT})\n\n${prompt}`;
   }
 
   const running = activeRuns.has(sessionKey);
@@ -1155,6 +1179,10 @@ async function processUpdate(upd: TelegramUpdate, expectedChatId: string | null)
         (dropped > 0 ? ` (${dropped} queued task${dropped === 1 ? '' : 's'} discarded)` : ''),
       { target }
     );
+    // The killed run never replied, and its transcript just stops mid-tool.
+    // Resumed without explanation, the agent guesses at what happened (or
+    // picks the same long command back up). Hand it the facts instead.
+    prompt = `${formatInterruptedRunNote(activeRuns.get(sessionKey)!)}\n\n${prompt}`;
   } else if (queueThis) {
     // Nothing to wait for — queueing into an idle conversation runs it now.
     await sendTelegram('▶️ Nothing is running here, so starting it right away.', { target });

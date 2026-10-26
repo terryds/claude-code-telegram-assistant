@@ -3,11 +3,15 @@
 Each Telegram message spawns a one-shot `claude -p` run. Three hard limits
 shape what the agent can do inside it:
 
-- A single Bash tool call is killed at **~10 minutes**.
+- A single Bash tool call is killed at **5 minutes** (the relay sets
+  `BASH_MAX_TIMEOUT_MS`; `RELAY_BASH_TIMEOUT_MS` changes it, `0` lifts it).
+- Any message the user sends while a run is going **kills that run** (auto-stop
+  & replace). The replacement prompt carries a relay note with how long the
+  killed run had been going and what it was doing, so the agent can answer.
 - Background commands die the moment the turn ends.
 - The final message is the **only** thing the user receives.
 
-A run that starts a 13-minute build in the foreground gets the command killed
+A run that starts a long build in the foreground gets the command killed
 and winds down with a stub ("No response requested.") — the user never gets an
 answer. The relay's reply guard (`server/reply-guard.ts`) now catches empty or
 stub endings and posts a "finished without answering" notice (naming the tool
@@ -55,7 +59,7 @@ That is damage control; the rules below are the plan.
 4. **If a long foreground command is unavoidable** (it must finish before the
    answer exists), send a short interim line first with `bin/notify "…"` so
    the user knows it will take a while, keep the command under the cap
-   (`timeout 540 …`), and still write a real final reply even if it got cut
+   (`timeout 240 …`), and still write a real final reply even if it got cut
    off.
 
 ## What the user sees when it goes wrong anyway
@@ -64,7 +68,7 @@ That is damage control; the rules below are the plan.
 ⚠️ Claude Code finished without answering
 The run ended with "No response requested." instead of a reply.
 
-A command in this run hit the 10-minute tool limit and was killed, which is
+A command in this run hit the Bash tool time limit and was killed, which is
 usually how the answer gets lost. Anything it was doing is not still running.
 
 Ask again and I will answer first; if the task is long, I will run it
