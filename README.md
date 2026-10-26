@@ -14,6 +14,32 @@ A tiny relay that forwards Telegram messages to [Claude Code](https://docs.claud
 
 > Codex support was removed. The engine layer is still pluggable (`server/engine.ts` / `server/engines.ts`); the last version that drove Codex is preserved on the `codex-support` branch.
 
+## Quick start on exe.dev (recommended)
+
+The easiest way to run the relay is on an [exe.dev](https://exe.dev) VM: its
+image already ships the `claude` CLI, every VM gets a public
+`https://<vm-name>.exe.xyz` domain, and you set it up by describing what you
+want — an agent on the VM does the install. Sign up with this invite link:
+
+https://exe.dev/i/rlOEOFDH72EMS2A
+
+1. Go to <https://exe.dev/new>, copy the prompt from
+   [exe-dev-setup-prompt.md](exe-dev-setup-prompt.md), and paste it into the
+   **Describe your VM** box. (Prefer the terminal? That file also has an
+   `ssh exe.dev new … --prompt=/dev/stdin` command and the recommended specs.)
+2. Open the new VM and go to its **Shelley** menu to watch the agent work: it
+   clones this repo, builds it, starts the relay under pm2 on port 8000, and
+   replies there with the dashboard URL.
+3. Open that URL and finish onboarding in the browser — sign in to Claude Code
+   (subscription or API key), then connect your Telegram bot. No terminal
+   login at any point.
+
+The dashboard has no authentication of its own, but you don't need to add
+any: exe.dev's proxy requires an exe.dev login by default, so only you can open
+that URL. Just don't `share set-public` this VM (see [Security](#security)).
+Prefer your own server? Follow [VPS setup with pm2](#vps-setup-with-pm2)
+instead.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) `>= 1.3.12`
@@ -189,7 +215,9 @@ The single Bun process serves both `/api/*` and the static React build on one po
 
 ## VPS setup with pm2
 
-These steps assume Ubuntu/Debian. Adjust paths as needed.
+The manual path for your own server. (On exe.dev, use the
+[quick start](#quick-start-on-exedev-recommended) instead — the agent does
+all of this for you.) These steps assume Ubuntu/Debian. Adjust paths as needed.
 
 ### 1. Install dependencies
 
@@ -532,6 +560,7 @@ Anyone who can open the dashboard URL can hit **Reset everything**, re-onboard w
 - An SSH tunnel (no public exposure at all — recommended for personal use)
 - A reverse proxy with HTTP basic auth (see the Nginx snippet above)
 - A VPN / Tailscale / Cloudflare Access in front of the port
+- An exe.dev VM, which already does this: its proxy requires an exe.dev login by default (don't `share set-public` it)
 
 ### Prompt injection is a real risk
 
