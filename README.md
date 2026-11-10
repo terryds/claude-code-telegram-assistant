@@ -469,7 +469,7 @@ To interrupt:
 
 To **not** interrupt, prefix the message with `/queue`: it's held until the current task (and anything queued before it) finishes, then runs as a normal follow-up turn in the same session. Works as a caption on photos/files too. `/queue` on its own lists what's waiting, `/queue clear` drops it, and `/stop` stops the running task *and* clears the queue. Queues are per conversation and in-memory — a relay restart (e.g. `/update`) drops them. `/queue` into an idle conversation just runs the message immediately.
 
-Stopping is a hard process kill: any file edits Claude already made stay on disk, only the in-flight turn is cut. The interrupted turn isn't saved to the session, so the next message resumes from the last *completed* turn.
+Stopping is a hard process kill: any file edits Claude already made stay on disk, and the conversation keeps everything up to the moment of the stop, so Claude knows what it was doing — but the rest of the task is dropped, so ask again. (Exception: if the very first message of a new conversation is stopped, the next message starts fresh.)
 
 ## Sending photos
 
