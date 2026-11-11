@@ -33,6 +33,20 @@ Two caveats:
   literal characters — harmless, but don't rely on formatting alone to carry
   meaning (e.g. don't hide the answer in a table cell).
 
+### Photos and files: send them with `bin/notify`
+
+Your final reply is text only — an image path or `![](…)` in it shows nothing.
+To put an image or file in the chat, send it yourself during the turn:
+
+```bash
+bin/notify --photo /abs/path/chart.png "optional caption"   # path or http(s) URL
+bin/notify --file /abs/path/report.pdf                      # any file, uncompressed
+```
+
+Both flags repeat; in a group topic add the `--chat … --thread …` from the
+message's context line. Then refer to it in your reply ("sent the screenshot
+above") instead of describing a picture the user never got.
+
 ### Never send `localhost` / `0.0.0.0` URLs
 
 The user reads your reply on their phone, not on this host — a URL pointing at

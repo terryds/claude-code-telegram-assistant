@@ -492,6 +492,25 @@ A relay that spawns `claude -p` on a starved VM looks exactly like a dead bot: t
 
 `bin/doctor` prints the host's available memory and swap alongside the dependency checks.
 
+## Getting photos and files back
+
+The agent's final reply is text, but it can send images and files to the chat
+during a turn with `bin/notify`:
+
+```bash
+bin/notify --photo ./chart.png "Signups, last 30 days"   # local path or http(s) URL
+bin/notify --file ./report.pdf                           # any file, sent uncompressed
+bin/notify --photo a.png --photo b.png "before / after"  # flags repeat
+```
+
+The message, if given, becomes the caption of the last attachment; text over
+Telegram's 1024-character caption limit (or sent with `--md`) follows as a
+separate message. A local image Telegram refuses as a photo (over 10 MB, or
+extreme dimensions) is retried as a file; files cap at 50 MB. Attachments
+always go straight to the Telegram API, not through `/api/notify`, and are
+logged to the dashboard feed as `[photo: <path>]`. Just ask — "send me a
+screenshot of the homepage", "plot that and send the chart".
+
 ## Notification gateway (`POST /api/notify`)
 
 Other apps on the same host can push Telegram alerts through the relay

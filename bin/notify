@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# notify [--chat <chat_id>] [--thread <thread_id>] [--md|--html] [--dry-run] [message...]
+# notify [--chat <chat_id>] [--thread <thread_id>] [--md|--html] [--dry-run]
+#        [--photo <path|url>]... [--file <path|url>]... [message...]
 #
 # Push a message to the linked Telegram chat, independent of the relay
 # process. Reads the bot token and default chat id from the relay's settings
@@ -17,7 +18,17 @@
 #                   text if the API rejects it)
 #   --html          send with parse_mode=HTML (default: plain text — safest
 #                   for arbitrary/piped output, which HTML mode would reject)
+#   --photo <path|url>  send an image (local file or http(s) URL). Repeatable.
+#                   The message, if any, becomes the caption of the last
+#                   attachment (sent as a separate text message instead when
+#                   it is over 1024 chars or --md is set). A local image
+#                   Telegram won't take as a photo (over 10 MB, extreme
+#                   dimensions) is retried as a file.
+#   --file <path|url>   send any file as a document, uncompressed (max 50 MB).
+#                   Repeatable; same caption rule as --photo.
 #   --dry-run       print the request bodies instead of sending
+#
+# With --photo/--file the message is optional and is never read from stdin.
 #
 # Delivery path: sends addressed to the default linked chat are routed through
 # the relay's POST /api/notify when the relay is up — that logs the message to
@@ -42,6 +53,10 @@ HTML=0
 MD=0
 DRY_RUN=0
 MSG_ARGS=()
+# Attachments, in send order: ATT_KINDS[i] is "photo" or "document",
+# ATT_SRCS[i] a local path or an http(s) URL.
+ATT_KINDS=()
+ATT_SRCS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,8 +64,10 @@ while [ $# -gt 0 ]; do
     --thread)  THREAD_ID="${2:?--thread needs a value}"; shift 2 ;;
     --md)      MD=1; shift ;;
     --html)    HTML=1; shift ;;
+    --photo)   ATT_KINDS+=(photo); ATT_SRCS+=("${2:?--photo needs a path or URL}"); shift 2 ;;
+    --file)    ATT_KINDS+=(document); ATT_SRCS+=("${2:?--file needs a path or URL}"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         MSG_ARGS+=("$1"); shift ;;
   esac
 done
@@ -60,8 +77,25 @@ if [ "$MD" = 1 ] && [ "$HTML" = 1 ]; then
   exit 1
 fi
 
+N_ATT=${#ATT_SRCS[@]}
+
+# Fail before sending anything if a local attachment is missing.
+i=0
+while [ "$i" -lt "$N_ATT" ]; do
+  case "${ATT_SRCS[$i]}" in
+    http://*|https://*) ;;
+    *) if [ ! -f "${ATT_SRCS[$i]}" ]; then
+         echo "notify: no such file: ${ATT_SRCS[$i]}" >&2
+         exit 1
+       fi ;;
+  esac
+  i=$((i + 1))
+done
+
 if [ ${#MSG_ARGS[@]} -gt 0 ]; then
   MSG="${MSG_ARGS[*]}"
+elif [ "$N_ATT" -gt 0 ]; then
+  MSG=""   # attachment-only send; don't block on stdin
 else
   MSG="$(cat)"
 fi
@@ -70,7 +104,8 @@ fi
 # not ${MSG//…/} substitution: the latter is quadratic in bash and hangs for
 # minutes on large piped input.)
 if [[ "$MSG" != *[![:space:]]* ]]; then
-  exit 0
+  [ "$N_ATT" -gt 0 ] || exit 0
+  MSG=""
 fi
 
 # The md loop below consumes $MSG chunk by chunk; keep the original for the
@@ -112,9 +147,9 @@ relay_send() {
 record_direct() {
   [ "$DEFAULT_CHAT" = 1 ] || return 0
   [ "$DRY_RUN" = 0 ] || return 0
-  local now esc
+  local now esc text="${1:-$ORIG_MSG}"
   now="$(($(date +%s) * 1000))"
-  esc="${ORIG_MSG//\'/\'\'}"
+  esc="${text//\'/\'\'}"
   sqlite3 "$DB" "
     CREATE TABLE IF NOT EXISTS pending_context (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,22 +166,92 @@ record_direct() {
   " 2>/dev/null || true
 }
 
+# Bot token + chat id for the direct Telegram path; exits when unconfigured.
+load_direct_config() {
+  [ -z "${TOKEN:-}" ] || return 0
+  TOKEN="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_bot_token'" 2>/dev/null || true)"
+  if [ -z "$CHAT_ID" ]; then
+    CHAT_ID="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_chat_id'" 2>/dev/null || true)"
+  fi
+  if [ -z "$TOKEN" ]; then
+    echo "notify: no telegram_bot_token in $DB" >&2
+    exit 1
+  fi
+  if [ -z "$CHAT_ID" ]; then
+    echo "notify: no chat id — link a chat in the dashboard or pass --chat" >&2
+    exit 1
+  fi
+}
+
+# Attachments always go straight to Telegram (the relay's /api/notify is
+# text-only), as a multipart upload for local files or by URL.
+#
+# send_attachment <method> <field> <src> <caption> → 0 if accepted; $RESP.
+send_attachment() {
+  local method="$1" field="$2" src="$3" caption="$4" value
+  case "$src" in
+    http://*|https://*) value="$src" ;;
+    # curl -F reads `;` and `,` in an @path as option separators — quote it.
+    *) value="@\"${src//\"/\\\"}\"" ;;
+  esac
+  local args=(-F "chat_id=$CHAT_ID" -F "$field=$value")
+  [ -z "$THREAD_ID" ] || args+=(-F "message_thread_id=$THREAD_ID")
+  if [ -n "$caption" ]; then
+    # --form-string: a caption starting with @ or < must not be read as a file.
+    args+=(--form-string "caption=$caption")
+    [ "$HTML" = 0 ] || args+=(-F "parse_mode=HTML")
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '%s' "$method"; printf ' %q' "${args[@]}"; echo
+    return 0
+  fi
+  RESP="$(curl -s --max-time 180 -X POST \
+    "https://api.telegram.org/bot${TOKEN}/$method" "${args[@]}")"
+  echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1
+}
+
+if [ "$N_ATT" -gt 0 ]; then
+  load_direct_config
+  # Captions cap at 1024 chars and can't be rich messages; otherwise the text
+  # rides on the last attachment and there is nothing left to send after.
+  CAPTION=""
+  if [ -n "$MSG" ] && [ "$MD" = 0 ] && [ "${#MSG}" -le 1024 ]; then
+    CAPTION="$MSG"
+  fi
+  i=0
+  while [ "$i" -lt "$N_ATT" ]; do
+    kind="${ATT_KINDS[$i]}"
+    src="${ATT_SRCS[$i]}"
+    cap=""
+    [ "$i" -lt $((N_ATT - 1)) ] || cap="$CAPTION"
+    if [ "$kind" = photo ]; then
+      if ! send_attachment sendPhoto photo "$src" "$cap"; then
+        case "$src" in
+          http://*|https://*)
+            echo "notify: photo send failed: $RESP" >&2
+            exit 1 ;;
+        esac
+        echo "notify: photo rejected ($RESP); sending as a file" >&2
+        kind=document
+      fi
+    fi
+    if [ "$kind" = document ] && ! send_attachment sendDocument document "$src" "$cap"; then
+      echo "notify: file send failed: $RESP" >&2
+      exit 1
+    fi
+    record_direct "[$kind: $src]${cap:+ $cap}"
+    i=$((i + 1))
+  done
+  if [ -n "$CAPTION" ] || [ -z "$MSG" ]; then
+    exit 0
+  fi
+fi
+
 if relay_send; then
   exit 0
 fi
 
-TOKEN="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_bot_token'" 2>/dev/null || true)"
-if [ -z "$CHAT_ID" ]; then
-  CHAT_ID="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_chat_id'" 2>/dev/null || true)"
-fi
-if [ -z "$TOKEN" ]; then
-  echo "notify: no telegram_bot_token in $DB" >&2
-  exit 1
-fi
-if [ -z "$CHAT_ID" ]; then
-  echo "notify: no chat id — link a chat in the dashboard or pass --chat" >&2
-  exit 1
-fi
+load_direct_config
 
 # Telegram caps plain messages at 4096 UTF-16 code units and rich messages at
 # 32768 UTF-8 characters; chunk conservatively (bash slices by codepoint, and
